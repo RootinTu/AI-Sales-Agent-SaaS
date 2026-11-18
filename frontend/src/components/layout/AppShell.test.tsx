@@ -1,21 +1,54 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from './AppShell'
 import { availableGuides } from '../guides/feature-guides'
+import { getMcpCapabilities, isDesktopClient } from '../../api/mcp-chat-api'
 
 const auth = vi.hoisted(() => ({ role: 'GUEST' }))
 vi.mock('../../auth/use-auth', () => ({ useAuth: () => ({ role: auth.role, userId: 'test-user', displayName: '游客', organizationName: '演示团队', email: 'guest@local' }) }))
 vi.mock('../../desktop/DesktopUpdatePrompt', () => ({ DesktopUpdateIndicator: () => null }))
 vi.mock('../../api/approvals-api', () => ({ getPendingApprovals: async () => ({ content: [], totalElements: 0 }) }))
 vi.mock('../../api/follow-ups-api', () => ({ getFollowUpReminders: async () => ({ unreadCount: 0, items: [] }), readFollowUpReminder: async () => {}, readAllFollowUpReminders: async () => {} }))
-function mount() {
-  return render(<MemoryRouter initialEntries={['/app/today']}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AppShell /></QueryClientProvider></MemoryRouter>)
+vi.mock('../../api/mcp-chat-api', () => ({
+  isDesktopClient: vi.fn(() => false),
+  getMcpCapabilities: vi.fn(),
+}))
+
+function mount(initialEntry = '/app/today') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <Routes>
+          <Route path="/app" element={<AppShell />}>
+            <Route path="today" element={<div>今日工作台内容</div>} />
+            <Route path="customers" element={<div>客户管理内容</div>} />
+            <Route path="agent" element={<div>自主 Agent 独立空间内容</div>} />
+          </Route>
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  )
 }
+
 afterEach(() => { cleanup(); sessionStorage.clear() })
-beforeEach(() => { auth.role = 'GUEST' })
+beforeEach(() => {
+  auth.role = 'GUEST'
+  vi.mocked(isDesktopClient).mockReturnValue(false)
+  vi.mocked(getMcpCapabilities).mockResolvedValue({
+    planCode: 'STARTER',
+    svip: false,
+    desktopClient: false,
+    agentModeAvailable: false,
+    defaultMode: 'LIGHT',
+    availableModes: ['LIGHT'],
+    unavailableReason: '自主 Agent 独立空间仅开放给桌面客户端和企业 SVIP 用户',
+    agentCapabilities: [],
+  })
+})
+
 const originalShow = HTMLDialogElement.prototype.showModal
 const originalClose = HTMLDialogElement.prototype.close
 beforeAll(() => {
@@ -61,7 +94,6 @@ describe('guest guide', () => {
   })
 })
 
-
 describe('feature navigation', () => {
   it.each(['GUEST', 'VIEWER', 'SALES', 'MANAGER', 'ADMIN', 'OWNER'])('includes a usable guide for every navigation entry visible to %s', (role) => {
     auth.role = role
@@ -91,5 +123,68 @@ describe('feature navigation', () => {
     const user = userEvent.setup(); mount()
     await user.type(screen.getByRole('searchbox', { name: '搜索功能' }), '成员管理')
     expect(screen.getByText('未找到匹配功能，请尝试其他关键词。')).toBeInTheDocument()
+  })
+})
+
+describe('workspace separation topbar', () => {
+  it('defaults to 全部业务 with CRM sidebar and locks 自主 Agent for Web STARTER users', async () => {
+    auth.role = 'SALES'
+    const user = userEvent.setup()
+    mount('/app/customers')
+
+    expect(screen.getByRole('tab', { name: /全部业务/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('complementary', { name: '应用导航' })).toBeInTheDocument()
+    expect(screen.getByText('客户管理内容')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '关闭窗口' })).not.toBeInTheDocument()
+
+    const agentTab = screen.getByRole('tab', { name: /自主 Agent/ })
+    expect(agentTab).toHaveAttribute('aria-disabled', 'true')
+    await user.click(agentTab)
+    expect(await screen.findByText(/自主 Agent 独立空间仅开放给桌面客户端和企业 SVIP 用户/)).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: '应用导航' })).toBeInTheDocument()
+  })
+
+  it('switches SVIP users between 全部业务 and standalone 自主 Agent workspace without CRM sidebar', async () => {
+    auth.role = 'OWNER'
+    vi.mocked(getMcpCapabilities).mockResolvedValue({
+      planCode: 'SVIP',
+      svip: true,
+      desktopClient: false,
+      agentModeAvailable: true,
+      defaultMode: 'LIGHT',
+      availableModes: ['LIGHT', 'AGENT'],
+      unavailableReason: null,
+      agentCapabilities: [],
+    })
+    const user = userEvent.setup()
+    mount('/app/customers')
+
+    const agentTab = screen.getByRole('tab', { name: /自主 Agent/ })
+    await waitFor(() => expect(agentTab).toHaveAttribute('aria-disabled', 'false'))
+    await user.click(agentTab)
+
+    expect(await screen.findByText('自主 Agent 独立空间内容')).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: '应用导航' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: /全部业务/ }))
+    expect(await screen.findByText('客户管理内容')).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: '应用导航' })).toBeInTheDocument()
+  })
+
+  it('renders desktop window controls and unlocks 自主 Agent for desktop client users', async () => {
+    auth.role = 'SALES'
+    vi.mocked(isDesktopClient).mockReturnValue(true)
+    const user = userEvent.setup()
+    mount('/app/today')
+
+    expect(screen.getByRole('button', { name: '最小化窗口' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '最大化窗口' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '关闭窗口' })).toBeInTheDocument()
+
+    const agentTab = screen.getByRole('tab', { name: /自主 Agent/ })
+    expect(agentTab).toHaveAttribute('aria-disabled', 'false')
+    await user.click(agentTab)
+    expect(await screen.findByText('自主 Agent 独立空间内容')).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: '应用导航' })).not.toBeInTheDocument()
   })
 })

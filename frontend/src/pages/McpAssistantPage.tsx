@@ -1,49 +1,19 @@
-import { Check, CircleNotch, EnvelopeSimple, Lock, MagicWand, PaperPlaneTilt, Paperclip, PlusSquare, Robot, ShieldCheck, Sparkle, SquaresFour, UserCircle, WarningCircle, Wrench, X } from '@phosphor-icons/react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type ChangeEvent, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
-import * as mcpChatApi from '../api/mcp-chat-api'
+import { MagicWand, PlusSquare, Robot, Sparkle, SquaresFour } from '@phosphor-icons/react'
+import { useState } from 'react'
+import { useAuth } from '../auth/use-auth'
 import {
-  getMcpConversations,
-  getMcpMessages,
-  streamMcpChatMessage,
-  type AssistantCapabilities,
-  type AssistantMode,
-  type SendMcpChatMessageInput,
-  type AssistantMessage,
-  type AssistantToolTrace,
-} from '../api/mcp-chat-api'
-import { getAiModelStatus, type AiModelStatus } from '../api/ai-settings-api'
-import { uploadFile, type UploadedFile } from '../api/files-api'
-import { approveApproval, getApproval, rejectApproval, type Approval } from '../api/approvals-api'
-import { getMembers, getTeamTokenBudget, updateMemberTokenQuota, updateTeamTokenBudget, type AdminMember, type TeamTokenBudget } from '../api/admin-api'
-import { ApiError } from '../api/axios-client'
-import { useAuth, useIsGuest } from '../auth/use-auth'
-import { Link } from 'react-router'
-import { AssistantActivity } from '../components/assistant/AssistantActivity'
+  formatTime,
+  useAssistantChatSession,
+  type AssistantToolGuide,
+  type ChatMessage,
+} from '../components/assistant/assistant-session'
+import {
+  AssistantConversationPane,
+  ModelInfoPanel,
+  TokenAllocationDialog,
+} from '../components/assistant/AssistantWorkspaceParts'
 
-interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  reasoningSummary?: string | null
-  traces?: AssistantToolTrace[]
-  attachments?: UploadedFile[]
-  data?: Record<string, unknown>
-  createdAt: string
-  streaming?: boolean
-  progress?: string
-  error?: string
-}
-
-interface ComposerAttachment {
-  id: string
-  file: File
-  filename: string
-  sizeBytes: number
-  uploaded?: UploadedFile
-}
-
-const toolGuides = [
+const toolGuides: AssistantToolGuide[] = [
   {
     tool: 'customer.create',
     label: '新增客户',
@@ -70,296 +40,39 @@ const toolGuides = [
   },
 ]
 
-const agentToolGuides = [
-  {
-    tool: 'agent.react.email',
-    label: '全景分析并起草邮件',
-    say: '先查一下云岚科技最近的聊天记录和报价，结合企业知识库折扣政策，帮我起草一封有针对性的跟进邮件。',
-    result: '自主跨模块检索客户档案、沟通记录、报价和知识库，并撰写待审批定制邮件',
-  },
-  {
-    tool: 'agent.react.pipeline',
-    label: '商机与报价联动排查',
-    say: '帮我查一下当前进行中的商机和关联报价单，看看哪些客户需要先安排跟进任务。',
-    result: '多步读取商机与报价单状态，梳理推进优先级',
-  },
-  {
-    tool: 'agent.react.memory',
-    label: '连续多轮追问',
-    say: '帮我检索近期互动过的客户，列出最需要今天联系的 3 家并说明原因。',
-    result: '结合上下文记忆进行连续追问与多步执行',
-  },
-]
-
 const welcomeMessage: ChatMessage = {
   id: 'welcome',
   role: 'assistant',
-  content: '我是 MCP 自动化助手。你可以直接说“新增客户”“给某客户导入聊天并跑 Agent”，我会自动调用客户、互动、Agent、审批和跟进工具。聊天记录现在会保存到数据库，刷新页面也能找回来。',
+  content: '我是 MCP 轻辅助助手。你可以直接说“新增客户”“给某客户导入聊天并跑 Agent”，我会自动调用客户、互动、Agent、审批和跟进工具。聊天记录会保存到数据库，刷新页面也能找回来。',
   reasoningSummary: '等待用户输入业务指令。',
   createdAt: new Date().toISOString(),
 }
 
+const guestDemoMessages: ChatMessage[] = [
+  { id: 'demo-user', role: 'user', content: '查看云岚科技的下一步跟进建议', createdAt: new Date().toISOString() },
+  {
+    id: 'demo-assistant',
+    role: 'assistant',
+    content: '演示结果：建议与云岚科技确认方案范围，并预约下一次评审。',
+    reasoningSummary: '根据模拟客户资料生成跟进建议。',
+    traces: [{ name: 'agent.sales_follow_up.run', status: 'SUCCEEDED', summary: '演示：已生成跟进建议' }],
+    createdAt: new Date().toISOString(),
+  },
+]
+
+/**
+ * 业务侧栏中的「MCP 助手」页面，专注于当前稳定高效的轻辅助（LIGHT）工作流，
+ * 与顶部栏切入的独立「自主 Agent」工作空间完全隔离。
+ */
 export function McpAssistantPage() {
   const session = useAuth()
-  const isGuest = useIsGuest()
-  const queryClient = useQueryClient()
-  const [input, setInput] = useState('')
-  const [activeConversationId, setActiveConversationId] = useState<string | undefined>()
-  const [messages, setMessages] = useState<ChatMessage[]>(() => isGuest ? [
-    { id: 'demo-user', role: 'user', content: '查看云岚科技的下一步跟进建议', createdAt: new Date().toISOString() },
-    { id: 'demo-assistant', role: 'assistant', content: '演示结果：建议与云岚科技确认方案范围，并预约下一次评审。', reasoningSummary: '根据模拟客户资料生成跟进建议。', traces: [{ name: 'agent.sales_follow_up.run', status: 'SUCCEEDED', summary: '演示：已生成跟进建议' }], createdAt: new Date().toISOString() },
-  ] : [welcomeMessage])
-  const [useLocalMessages, setUseLocalMessages] = useState(true)
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
-  const [attachmentError, setAttachmentError] = useState('')
-  const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const [tokenAllocationOpen, setTokenAllocationOpen] = useState(false)
-  const [selectedMode, setSelectedMode] = useState<AssistantMode>('LIGHT')
-  const [modeNotice, setModeNotice] = useState('')
-  const desktopClient = typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
-  const pendingId = useRef('')
-  const pendingConversationId = useRef<string | undefined>(undefined)
-  const busy = useRef(false)
-  const streamController = useRef<AbortController | null>(null)
-  const messageListRef = useRef<HTMLDivElement | null>(null)
-  const composerRef = useRef<HTMLTextAreaElement | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-
-  const conversationsQuery = useQuery({
-    queryKey: ['mcp-conversations'],
-    queryFn: getMcpConversations,
-    enabled: !isGuest,
+  const chat = useAssistantChatSession({
+    mode: 'LIGHT',
+    welcomeMessage,
+    guestDemoMessages,
+    pendingProgressText: '正在连接助手…',
   })
-
-  const messagesQuery = useQuery({
-    queryKey: ['mcp-messages', activeConversationId],
-    queryFn: () => getMcpMessages(activeConversationId!),
-    enabled: !isGuest && Boolean(activeConversationId),
-  })
-  const modelQuery = useQuery({
-    queryKey: ['ai-model-status'],
-    queryFn: getAiModelStatus,
-    enabled: !isGuest,
-  })
-  const capabilitiesQuery = useQuery<AssistantCapabilities>({
-    queryKey: ['mcp-capabilities', desktopClient],
-    queryFn: () => typeof mcpChatApi.getMcpCapabilities === 'function'
-      ? mcpChatApi.getMcpCapabilities()
-      : Promise.resolve({
-        planCode: 'STARTER',
-        svip: false,
-        desktopClient,
-        agentModeAvailable: desktopClient,
-        defaultMode: 'LIGHT',
-        availableModes: desktopClient ? ['LIGHT', 'AGENT'] : ['LIGHT'],
-        unavailableReason: desktopClient ? null : '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户',
-        agentCapabilities: [],
-      }),
-    enabled: !isGuest,
-  })
-
-  const capabilities = capabilitiesQuery.data
-  const agentModeAvailable = !isGuest && Boolean(capabilities?.agentModeAvailable || desktopClient)
-  const activeMode: AssistantMode = agentModeAvailable ? selectedMode : 'LIGHT'
-  const activeGuides = activeMode === 'AGENT' ? agentToolGuides : toolGuides
-  const modeBadgeLabel = capabilities?.svip
-    ? '企业 SVIP'
-    : (capabilities?.desktopClient || desktopClient)
-      ? '桌面客户端'
-      : '客户端 / SVIP 专享'
-
-  const conversations = conversationsQuery.data?.content ?? []
-  const quotaUnavailable = !isGuest && !modelQuery.isLoading && (
-    modelQuery.data?.usage?.memberAllocatedTokens == null
-      || (modelQuery.data.usage.memberRemainingTokens ?? 0) <= 0
-  )
-  const mcpDisabled = isGuest || quotaUnavailable
-  const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId)
-
-  const displayedMessages = useMemo(() => useLocalMessages ? messages : (messagesQuery.data?.content ?? [])
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map(toChatMessage), [useLocalMessages, messages, messagesQuery.data])
-  const chatMessages = displayedMessages.filter((message) => message.id !== 'welcome')
-
-  const chatMutation = useMutation({
-    retry: false,
-    mutationFn: (request: SendMcpChatMessageInput) => streamMcpChatMessage(request, (event) => {
-      if (event.type === 'meta') {
-        pendingConversationId.current = event.data.conversationId
-        return
-      }
-      setMessages((current) => current.map((message) => {
-        if (message.id !== pendingId.current) return message
-        if (event.type === 'delta') return { ...message, content: message.content + event.data.text }
-        if (event.type === 'progress') return { ...message, progress: event.data.text }
-        if (event.type === 'summary') return { ...message, reasoningSummary: event.data.text }
-        if (event.type === 'tool') {
-          return {
-            ...message,
-            traces: [
-              ...(message.traces ?? []).filter((trace) => !(trace.name === event.data.name && trace.status === 'RUNNING')),
-              event.data,
-            ],
-          }
-        }
-        if (event.type === 'error') return { ...message, error: event.data.message }
-        return message
-      }))
-    }, streamController.current?.signal),
-    onSuccess: (response) => {
-      setActiveConversationId(response.conversationId)
-      setAttachments([])
-      setMessages((current) => current.map((message) => message.id !== pendingId.current ? message : {
-        id: response.messageId,
-        role: 'assistant',
-        content: response.content,
-        reasoningSummary: response.reasoningSummary,
-        traces: response.toolTraces,
-        data: response.data,
-        createdAt: response.createdAt,
-        error: message.error,
-      }))
-      void queryClient.invalidateQueries({ queryKey: ['mcp-conversations'] })
-      void queryClient.invalidateQueries({ queryKey: ['mcp-messages', response.conversationId] })
-      void queryClient.invalidateQueries({ queryKey: ['agent-runs'] })
-      void queryClient.invalidateQueries({ queryKey: ['approvals'] })
-      void queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
-      void queryClient.invalidateQueries({ queryKey: ['customers'] })
-      void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
-      void queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
-    },
-    onError: (error) => {
-      setMessages((current) => current.map((message) => message.id !== pendingId.current ? message : {
-        ...message,
-        streaming: false,
-        error: error instanceof Error ? error.message : '连接中断，请查看历史记录确认执行结果。',
-      }))
-      void queryClient.invalidateQueries({ queryKey: ['mcp-conversations'] })
-    },
-    onSettled: () => {
-      busy.current = false
-      streamController.current = null
-    },
-  })
-
-  useEffect(() => () => streamController.current?.abort(), [])
-
-  useEffect(() => {
-    const messageList = messageListRef.current
-    if (!messageList || typeof messageList.scrollTo !== 'function') return
-    messageList.scrollTo({
-      top: messageList.scrollHeight,
-      behavior: 'smooth',
-    })
-  }, [displayedMessages, chatMutation.isPending])
-
-  function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedFiles = Array.from(event.target.files ?? [])
-    event.target.value = ''
-    if (!selectedFiles.length || chatMutation.isPending || uploadingAttachments) return
-    setAttachmentError('')
-    if (attachments.length + selectedFiles.length > 5) {
-      setAttachmentError('一次消息最多携带 5 个附件')
-      return
-    }
-    const oversized = selectedFiles.find((file) => file.size > 10 * 1024 * 1024)
-    if (oversized) {
-      setAttachmentError(`${oversized.name} 超过 10MB，请压缩后再上传`)
-      return
-    }
-    setAttachments((current) => [...current, ...selectedFiles.map((file) => ({
-      id: crypto.randomUUID(),
-      file,
-      filename: file.name,
-      sizeBytes: file.size,
-    }))])
-  }
-
-  function removeAttachment(fileId: string) {
-    if (chatMutation.isPending || uploadingAttachments) return
-    setAttachments((current) => current.filter((file) => file.id !== fileId))
-  }
-
-  async function submit(message = input) {
-    const content = message.trim()
-    if (!content || busy.current || mcpDisabled || uploadingAttachments) return
-    busy.current = true
-    setAttachmentError('')
-    setUploadingAttachments(true)
-    let submittedAttachments: UploadedFile[]
-    try {
-      submittedAttachments = await Promise.all(attachments.map((attachment) => (
-        attachment.uploaded ?? uploadFile(attachment.file)
-      )))
-      setAttachments((current) => current.map((attachment, index) => ({
-        ...attachment,
-        uploaded: submittedAttachments[index] ?? attachment.uploaded,
-      })))
-    } catch (error) {
-      setAttachmentError(error instanceof Error ? error.message : '附件上传失败，请重试')
-      busy.current = false
-      setUploadingAttachments(false)
-      return
-    }
-    setUploadingAttachments(false)
-    streamController.current = new AbortController()
-    pendingId.current = crypto.randomUUID()
-    setUseLocalMessages(true)
-    setMessages([...displayedMessages, {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content,
-      attachments: submittedAttachments,
-      createdAt: new Date().toISOString(),
-    }, {
-      id: pendingId.current,
-      role: 'assistant',
-      content: '',
-      streaming: true,
-      progress: activeMode === 'AGENT' ? '自主 Agent 正在启动多步规划…' : '正在连接助手…',
-      data: { assistantMode: activeMode },
-      createdAt: new Date().toISOString(),
-    }])
-    setInput('')
-    setAttachmentError('')
-    chatMutation.mutate({
-      conversationId: activeConversationId ?? pendingConversationId.current,
-      message: content,
-      attachmentIds: submittedAttachments.map((file) => file.id),
-      mode: activeMode,
-    })
-  }
-
-  function handleSelectMode(nextMode: AssistantMode) {
-    if (chatMutation.isPending) return
-    if (nextMode === 'AGENT' && !agentModeAvailable) {
-      setModeNotice(capabilities?.unavailableReason ?? '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户')
-      return
-    }
-    setModeNotice('')
-    setSelectedMode(nextMode)
-  }
-
-  function applyToolTemplate(template: string) {
-    if (chatMutation.isPending) return
-    setInput(template)
-    window.setTimeout(() => {
-      composerRef.current?.focus()
-      composerRef.current?.setSelectionRange(template.length, template.length)
-    }, 0)
-  }
-
-  function startNewConversation() {
-    setActiveConversationId(undefined)
-    setUseLocalMessages(true)
-    pendingConversationId.current = undefined
-    setMessages([welcomeMessage])
-    setInput('')
-    setAttachments([])
-    setAttachmentError('')
-  }
-
-  const readableStatus = isGuest ? '演示会话' : chatMutation.isPending ? '正在执行' : activeConversation ? '历史已保存' : '新会话'
 
   return (
     <section className="mcp-page">
@@ -367,27 +80,27 @@ export function McpAssistantPage() {
         <aside className="mcp-history-panel">
           <header>
             <h2>会话列表</h2>
-            <button type="button" onClick={startNewConversation} disabled={chatMutation.isPending || isGuest}>
+            <button type="button" onClick={chat.startNewConversation} disabled={chat.isPending || chat.isGuest}>
               <PlusSquare size={16} />
               <span>新建</span>
             </button>
           </header>
-          {isGuest ? (
+          {chat.isGuest ? (
             <p className="mcp-history-empty">当前展示模拟会话，登录后可使用自动化聊天和会话历史。</p>
-          ) : conversations.length === 0 ? (
+          ) : chat.conversations.length === 0 ? (
             <div className="mcp-empty-history">
               <Robot size={52} />
-              <p>{conversationsQuery.isLoading ? '正在读取历史会话…' : '暂无可用会话'}</p>
+              <p>{chat.conversationsQuery.isLoading ? '正在读取历史会话…' : '暂无可用会话'}</p>
             </div>
           ) : (
             <div className="mcp-history-list">
-              {conversations.map((conversation) => (
+              {chat.conversations.map((conversation) => (
                 <button
                   key={conversation.id}
                   type="button"
-                  className={conversation.id === activeConversationId ? 'is-active' : ''}
-                  disabled={chatMutation.isPending}
-                  onClick={() => { setActiveConversationId(conversation.id); setUseLocalMessages(false) }}
+                  className={conversation.id === chat.activeConversationId ? 'is-active' : ''}
+                  disabled={chat.isPending}
+                  onClick={() => chat.selectConversation(conversation.id)}
                 >
                   <strong>{conversation.title}</strong>
                   <span>{formatTime(conversation.lastMessageAt ?? conversation.createdAt)} · {conversation.channel}</span>
@@ -396,8 +109,8 @@ export function McpAssistantPage() {
             </div>
           )}
           <ModelInfoPanel
-            status={modelQuery.data}
-            loading={modelQuery.isLoading}
+            status={chat.modelQuery.data}
+            loading={chat.modelQuery.isLoading}
             canAllocate={session.role === 'OWNER' || session.role === 'ADMIN'}
             onAllocate={() => setTokenAllocationOpen(true)}
           />
@@ -407,564 +120,24 @@ export function McpAssistantPage() {
           <header className="mcp-chat-header">
             <h1><SquaresFour size={18} />AI助手</h1>
             <div className="mcp-header-actions">
-              <div className="mcp-mode-switch" role="group" aria-label="助手工作模式">
-                <button
-                  type="button"
-                  className={activeMode === 'LIGHT' ? 'is-active' : ''}
-                  disabled={chatMutation.isPending}
-                  onClick={() => handleSelectMode('LIGHT')}
-                >
-                  <MagicWand size={14} />
-                  <span>轻辅助模式</span>
-                </button>
-                <button
-                  type="button"
-                  className={`${activeMode === 'AGENT' ? 'is-active' : ''}${!agentModeAvailable ? ' is-locked' : ''}`}
-                  aria-disabled={!agentModeAvailable}
-                  disabled={chatMutation.isPending}
-                  title={agentModeAvailable ? '多步自主推理、上下文记忆与跨模块执行' : '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户'}
-                  onClick={() => handleSelectMode('AGENT')}
-                >
-                  {agentModeAvailable ? <Robot size={14} /> : <Lock size={13} />}
-                  <span>自主 Agent</span>
-                  <em className="mcp-mode-tag">{modeBadgeLabel}</em>
-                </button>
-              </div>
-              <span className="mcp-status"><Sparkle size={14} />{readableStatus}</span>
+              <span className="mcp-mode-pill"><MagicWand size={13} />轻辅助模式</span>
+              <span className="mcp-status"><Sparkle size={14} />{chat.readableStatus}</span>
             </div>
           </header>
-          {modeNotice ? (
-            <div className="mcp-mode-notice" role="status">
-              <Lock size={14} />
-              <span>{modeNotice}</span>
-              <button type="button" aria-label="关闭模式提示" onClick={() => setModeNotice('')}><X size={13} /></button>
-            </div>
-          ) : null}
-          <div ref={messageListRef} className="mcp-message-list" aria-live="polite">
-            {messagesQuery.isFetching && activeConversationId ? (
-              <article className="mcp-message is-assistant">
-                <span className="mcp-avatar" aria-hidden><Robot size={20} /></span>
-                <div className="mcp-bubble">
-                  <ThinkingSkeleton title="正在加载历史消息" />
-                </div>
-              </article>
-            ) : null}
-            {chatMessages.length === 0 && !messagesQuery.isFetching ? (
-              <div className="mcp-empty-chat">
-                <h2>{activeMode === 'AGENT' ? '自主销售 Agent 工作台' : '销售自动化助手'}</h2>
-                <p className="mcp-empty-intro">
-                  {activeMode === 'AGENT'
-                    ? '已开启自主 Agent 模式：支持多轮上下文记忆、跨客户/互动/商机/报价/知识库多步推理，并结合客户痛点自动起草高转化待审批邮件。'
-                    : '把客户资料、聊天记录、跟进建议和审批动作放在同一个工作流里，帮助销售团队更快整理线索、沉淀过程，并把需要人工确认的动作留在可追踪的记录中。'}
-                </p>
-              </div>
-            ) : null}
-            {chatMessages.map((message) => (
-              <article key={message.id} className={`mcp-message is-${message.role}`}>
-                <span className="mcp-avatar" aria-hidden>
-                  {message.role === 'user' ? <UserCircle size={20} /> : <Robot size={20} />}
-                </span>
-                <div className="mcp-bubble">
-                  {message.role === 'assistant' ? (
-                    <AssistantOutput message={message} />
-                  ) : (
-                    <>
-                      <p>{message.content}</p>
-                      <MessageAttachmentList attachments={message.attachments ?? []} />
-                    </>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
 
-          <form
-            className="mcp-composer"
-            onSubmit={(event) => {
-              event.preventDefault()
-              submit()
-            }}
-          >
-            <div className="mcp-tool-capsules" aria-label="快捷操作">
-              {activeGuides.map((guide) => (
-                <button
-                  key={guide.tool}
-                  type="button"
-                  disabled={mcpDisabled || chatMutation.isPending}
-                  aria-label={`套用${guide.label}模板`}
-                  title={guide.result}
-                  onClick={() => applyToolTemplate(guide.say)}
-                >
-                  <Wrench size={13} />
-                  <span>{guide.label}</span>
-                </button>
-              ))}
-            </div>
-            {attachments.length ? (
-              <div className="mcp-attachment-list" aria-label="已选择附件">
-                {attachments.map((file) => (
-                  <span key={file.id} title={file.filename}>
-                    <Paperclip size={13} />
-                    <b>{file.filename}</b>
-                    <small>{formatFileSize(file.sizeBytes)}</small>
-                    <button type="button" aria-label={`移除附件 ${file.filename}`} disabled={chatMutation.isPending || uploadingAttachments} onClick={() => removeAttachment(file.id)}>
-                      <X size={12} />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            {attachmentError ? <p className="mcp-attachment-error" role="alert">{attachmentError}</p> : null}
-            <textarea
-              ref={composerRef}
-              value={input}
-              disabled={mcpDisabled || uploadingAttachments}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
-                event.preventDefault()
-                submit()
-              }}
-              placeholder={isGuest
-                ? '游客模式不能执行自动化操作'
-                : quotaUnavailable
-                  ? '尚未分配 Token 额度，请联系管理员'
-                  : activeMode === 'AGENT'
-                    ? '自主 Agent 模式：支持连续追问、跨模块查客户/商机/报价与知识库，并智能起草待审批邮件'
-                    : '例如：给云岚科技导入聊天。输入消息，按 Shift + Enter 换行，按 Enter 发送'}
-              rows={2}
-            />
-            <div className="mcp-composer-footer">
-              <div className="mcp-composer-tools">
-                <input
-                  ref={fileInputRef}
-                  className="mcp-file-input"
-                  type="file"
-                  multiple
-                  disabled={mcpDisabled}
-                  aria-label="选择 MCP 聊天附件"
-                  onChange={handleAttachmentChange}
-                />
-                <button
-                  type="button"
-                  aria-label="选择附件"
-                  title="选择报价、方案、合同等附件，发送消息时才会上传"
-                  disabled={mcpDisabled || chatMutation.isPending || uploadingAttachments || attachments.length >= 5}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Paperclip size={18} />
-                </button>
-                <span><Sparkle size={15} />{modelQuery.data?.model ?? 'qwen3.5-plus'}</span>
-                <span>{activeMode === 'AGENT' ? <><Robot size={15} />自主 Agent 模式</> : <><MagicWand size={15} />轻辅助模式</>}</span>
-                {uploadingAttachments ? <span><CircleNotch size={15} className="mcp-spin" />正在上传附件</span> : null}
-              </div>
-              <button className="mcp-send-button" type="submit" aria-label="发送指令" disabled={mcpDisabled || chatMutation.isPending || uploadingAttachments || !input.trim()}>
-                <PaperPlaneTilt size={21} weight="fill" />
-              </button>
-            </div>
-          </form>
+          <AssistantConversationPane
+            session={chat}
+            guides={toolGuides}
+            guidesAriaLabel="快捷操作"
+            emptyTitle="销售自动化助手"
+            emptyIntro="把客户资料、聊天记录、跟进建议和审批动作放在同一个工作流里，帮助销售团队更快整理线索、沉淀过程，并把需要人工确认的动作留在可追踪的记录中。"
+            loadingHistoryTitle="正在加载历史消息"
+            attachmentAriaLabel="选择 MCP 聊天附件"
+            placeholder={chat.isGuest ? '游客模式不能执行自动化操作' : chat.quotaUnavailable ? '尚未分配 Token 额度，请联系管理员' : '例如：给云岚科技导入聊天。输入消息，按 Shift + Enter 换行，按 Enter 发送'}
+          />
         </section>
       </div>
       {tokenAllocationOpen ? <TokenAllocationDialog onClose={() => setTokenAllocationOpen(false)} /> : null}
     </section>
   )
-}
-
-function ModelInfoPanel({ status, loading, canAllocate, onAllocate }: { status?: AiModelStatus; loading: boolean; canAllocate: boolean; onAllocate: () => void }) {
-  const usage = status?.usage
-  const totalTokens = usage?.totalTokens ?? 0
-  const memberUsedTokens = usage?.memberUsedTokens ?? 0
-  const memberAllocatedTokens = usage?.memberAllocatedTokens ?? null
-  return (
-    <section className="mcp-model-panel" aria-label="用量统计">
-      <header>
-        <strong>用量统计</strong>
-        <span>{memberAllocatedTokens == null ? '未分配额度' : `剩 ${formatCompactNumber(usage?.memberRemainingTokens ?? 0)}`}</span>
-      </header>
-      {loading ? (
-        <div className="mcp-model-loading"><span /><span /><span /></div>
-      ) : (
-        <>
-          {memberAllocatedTokens == null || memberAllocatedTokens <= 0 ? (
-            <div className="mcp-usage-total is-blocked"><span>当前不可用</span><strong>0</strong><small>可用 Token</small></div>
-          ) : (
-            <TokenProgress label="剩余额度" value={memberUsedTokens} total={memberAllocatedTokens} tone="blue" />
-          )}
-          <div className="mcp-usage-breakdown">
-            <span><small>团队累计</small><strong>{formatCompactNumber(totalTokens)}</strong></span>
-            <span><small>模型调用</small><strong>{formatCompactNumber(usage?.successfulCalls ?? 0)}</strong></span>
-          </div>
-          <div className="mcp-model-meta">
-            <span>{status?.model ?? '-'}</span>
-            <span>{modelStatusLabel(status?.status)}</span>
-          </div>
-          {canAllocate ? <button type="button" className="mcp-quota-button" onClick={onAllocate}>Token 分配</button> : null}
-          {usage?.lastCalledAt ? <p className="mcp-model-time">最近调用：{formatTime(usage.lastCalledAt)}</p> : null}
-        </>
-      )}
-    </section>
-  )
-}
-
-function TokenAllocationDialog({ onClose }: { onClose: () => void }) {
-  const queryClient = useQueryClient()
-  const [totalInput, setTotalInput] = useState<string | null>(null)
-  const [page, setPage] = useState(0)
-  const budgetQuery = useQuery({ queryKey: ['team-token-budget'], queryFn: getTeamTokenBudget })
-  const query = useQuery({
-    queryKey: ['admin-members', 'token-allocation', page],
-    queryFn: () => getMembers({ keyword: '', role: '', status: 'ACTIVE', page, size: 20 }),
-  })
-  const totalValue = totalInput ?? (budgetQuery.data?.totalTokens == null ? '' : String(budgetQuery.data.totalTokens))
-  const totalInvalid = !/^\d+$/.test(totalValue) || Number(totalValue) > 1_000_000_000_000
-    || !Number.isSafeInteger(Number(totalValue)) || Number(totalValue) < (budgetQuery.data?.allocatedTokens ?? 0)
-  const budgetUnavailable = budgetQuery.isError && budgetQuery.error instanceof ApiError && budgetQuery.error.status === 404
-  const budgetMutation = useMutation({
-    mutationFn: () => updateTeamTokenBudget(Number(totalValue)),
-    onSuccess: async (budget) => {
-      queryClient.setQueryData(['team-token-budget'], budget)
-      setTotalInput(null)
-      await queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
-    },
-  })
-  return (
-    <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="admin-modal mcp-token-modal" role="dialog" aria-modal="true" aria-labelledby="token-allocation-title">
-        <header><span className="drawer-title-icon"><Sparkle size={20} /></span><div><h2 id="token-allocation-title">Token 分配</h2><p>按团队内部总额分配；这不是千问账户余额。</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
-        <div className="mcp-token-budget">
-          <form onSubmit={(event) => { event.preventDefault(); if (!totalInvalid && budgetQuery.isSuccess) budgetMutation.mutate() }}>
-            <label htmlFor="team-token-total">团队 Token 总额</label>
-            <input id="team-token-total" inputMode="numeric" value={totalValue} onChange={(event) => setTotalInput(event.target.value)} placeholder="先设置总额" />
-            <button className="button button-primary" type="submit" disabled={totalInvalid || budgetMutation.isPending || !budgetQuery.isSuccess}>保存总额</button>
-          </form>
-          {budgetQuery.data ? <div className="mcp-token-budget-stats" aria-label="团队 Token 预算">
-            <span>总额 <strong>{budgetQuery.data.totalTokens == null ? '未设置' : formatCompactNumber(budgetQuery.data.totalTokens)}</strong></span>
-            <span>已分配 <strong>{formatCompactNumber(budgetQuery.data.allocatedTokens)}</strong></span>
-            <span>待分配 <strong>{budgetQuery.data.unallocatedTokens == null ? '—' : formatCompactNumber(budgetQuery.data.unallocatedTokens)}</strong></span>
-          </div> : null}
-          {budgetQuery.isError ? <p role="alert">{budgetUnavailable ? '当前后端版本尚未提供 Token 总额接口，请先部署包含此功能的后端和数据库迁移。' : budgetQuery.error.message}</p> : null}
-          {budgetMutation.isError ? <p role="alert">{budgetMutation.error.message}</p> : null}
-        </div>
-        <div className="mcp-token-member-list">
-          {query.data?.content.map((member) => <TokenAllocationRow key={member.id} member={member} budget={budgetQuery.data} />)}
-          {query.isPending ? <p className="audit-state">正在读取成员用量…</p> : null}
-          {query.isError ? <p className="audit-state is-error">{query.error.message}</p> : null}
-        </div>
-        <footer>
-          <span className="mcp-token-pagination">{query.data ? `${query.data.totalElements} 位成员 · 第 ${page + 1} 页` : ''}</span>
-          <button className="button button-secondary" type="button" disabled={page === 0} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <button className="button button-secondary" type="button" disabled={!query.data || query.data.last} onClick={() => setPage((value) => value + 1)}>下一页</button>
-          <button className="button button-secondary" type="button" onClick={onClose}>完成</button>
-        </footer>
-      </section>
-    </div>
-  )
-}
-
-function TokenAllocationRow({ member, budget }: { member: AdminMember; budget?: TeamTokenBudget }) {
-  const queryClient = useQueryClient()
-  const [value, setValue] = useState(member.allocatedTokens == null ? '' : String(member.allocatedTokens))
-  const mutation = useMutation({
-    mutationFn: () => updateMemberTokenQuota(member.id, value.trim() === '' ? null : Number(value)),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['admin-members'] })
-      await queryClient.invalidateQueries({ queryKey: ['team-token-budget'] })
-      await queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
-    },
-  })
-  const maxForMember = (budget?.unallocatedTokens ?? 0) + (member.allocatedTokens ?? 0)
-  const invalid = value.trim() !== '' && (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value))
-    || Number(value) > 1_000_000_000_000 || Number(value) > maxForMember)
-  return (
-    <div className="mcp-token-member-row">
-      <span className="member-identity"><i>{member.displayName.slice(0, 1)}</i><span><strong>{member.displayName}</strong><small>已用 {formatCompactNumber(member.usedTokens)} Token</small></span></span>
-      <label><span>分配额度 · 最多 {formatCompactNumber(maxForMember)}</span><input aria-label={`${member.displayName} Token 额度`} inputMode="numeric" placeholder="未分配" value={value} onChange={(event) => setValue(event.target.value)} /></label>
-      <button className="button button-primary" type="button" disabled={!budget || budget.totalTokens == null || invalid || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '保存中' : '保存'}</button>
-      {mutation.isError ? <p role="alert">{mutation.error.message}</p> : null}
-      {mutation.isSuccess ? <p className="is-success">已更新</p> : null}
-    </div>
-  )
-}
-
-function TokenProgress({ label, value, total, tone = 'blue' }: { label: string; value: number; total: number; tone?: 'blue' | 'green' | 'amber' }) {
-  const percent = percentage(Math.max(0, total - value), total)
-  return (
-    <div className={`mcp-token-progress is-${tone}`}>
-      <div><span>{label}</span><strong>{percent}%</strong></div>
-      <progress value={percent} max={100} aria-label={`${label} ${percent}%`} />
-      <span style={{ '--progress': `${percent}%` } as CSSProperties} aria-hidden />
-      <small>已用 {formatCompactNumber(value)} / {formatCompactNumber(total)}</small>
-    </div>
-  )
-}
-
-function toChatMessage(message: AssistantMessage): ChatMessage {
-  return {
-    id: message.id,
-    role: message.role === 'user' ? 'user' : 'assistant',
-    content: message.content,
-    reasoningSummary: message.reasoningSummary,
-    traces: message.toolTraces,
-    attachments: dataAttachments(message.data),
-    data: message.data,
-    createdAt: message.createdAt,
-  }
-}
-
-function MessageAttachmentList({ attachments }: { attachments: UploadedFile[] }) {
-  if (!attachments.length) return null
-  return (
-    <div className="mcp-message-attachments" aria-label="消息附件">
-      {attachments.map((file) => (
-        <span key={file.id} title={file.filename}>
-          <Paperclip size={13} />
-          <b>{file.filename}</b>
-          <small>{formatFileSize(file.sizeBytes)}</small>
-        </span>
-      ))}
-    </div>
-  )
-}
-
-function AssistantOutput({ message }: { message: ChatMessage }) {
-  const traces = message.traces ?? []
-  const approvalIds = dataApprovalIds(message.data)
-  const knowledgeSources = Array.isArray(message.data?.knowledgeSources)
-    ? message.data.knowledgeSources.flatMap((source: unknown) => {
-      if (!source || typeof source !== 'object') return []
-      const item = source as Record<string, unknown>
-      return typeof item.documentId === 'string' && typeof item.title === 'string'
-        ? [{ documentId: item.documentId, title: item.title, pageNumber: typeof item.pageNumber === 'number' ? item.pageNumber : null }]
-        : []
-    }) : []
-  return (
-    <div className="mcp-assistant-output">
-      {message.streaming ? (
-        <div className="mcp-pending-head" aria-label="Agent 执行进度">
-          <CircleNotch size={18} className="mcp-spin" />
-          <div><strong>Agent 正在处理</strong><span>{message.progress}</span></div>
-        </div>
-      ) : null}
-      <section className="mcp-output-card">
-        <header>
-          <Sparkle size={14} />结果输出
-          {message.data?.assistantMode === 'AGENT' ? <em className="mcp-output-mode-badge">自主 Agent</em> : null}
-        </header>
-        <p>{message.content}{message.streaming && message.content ? <span className="mcp-stream-cursor" aria-hidden>▍</span> : null}</p>
-      </section>
-      {knowledgeSources.length > 0 && <div className="mcp-knowledge-sources" aria-label="知识库引用">{knowledgeSources.map((source, index) => <Link key={`${source.documentId}-${index}`} to={`/app/knowledge?document=${encodeURIComponent(source.documentId)}`}>[资料 {index + 1}] {source.title}{source.pageNumber ? ` · 第 ${source.pageNumber} 页` : ''}</Link>)}</div>}
-      {shouldShowStreamError(message) ? <p role="alert" className="mcp-stream-error"><WarningCircle size={15} />{message.error}</p> : null}
-
-      <AssistantActivity summary={message.reasoningSummary} traces={traces} data={message.data} />
-
-      {approvalIds.map((approvalId) => (
-        <InlineApproval key={approvalId} approvalId={approvalId} />
-      ))}
-
-    </div>
-  )
-}
-
-function ThinkingSkeleton({ title }: { title: string }) {
-  return (
-    <div className="mcp-thinking-skeleton" aria-label={title}>
-      <strong>{title}<i /><i /><i /></strong>
-      <span />
-      <span />
-      <span />
-    </div>
-  )
-}
-
-function shouldShowStreamError(message: ChatMessage) {
-  if (!message.error?.trim()) return false
-  return !message.content.includes(message.error.trim())
-}
-
-function dataApprovalIds(data?: Record<string, unknown>) {
-  if (!data) return []
-  const ids: string[] = []
-  if (typeof data.approvalId === 'string') ids.push(data.approvalId)
-  if (Array.isArray(data.approvals)) {
-    data.approvals.forEach((item) => {
-      if (!item || typeof item !== 'object') return
-      const id = (item as Record<string, unknown>).id
-      if (typeof id === 'string') ids.push(id)
-    })
-  }
-  return [...new Set(ids)]
-}
-
-function previewText(value: unknown) {
-  return typeof value === 'string' || typeof value === 'number' ? String(value) : null
-}
-
-function previewAttachments(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return []
-    const record = item as Record<string, unknown>
-    const id = previewText(record.id)
-    const name = previewText(record.name)
-    return id && name ? [{ id, name }] : []
-  })
-}
-
-function actionLabel(value: string) {
-  if (value === 'SEND_EMAIL') return '发送邮件'
-  if (value === 'CREATE_CRM_TASK') return '创建 CRM 任务'
-  if (value === 'CREATE_INTERNAL_FOLLOW_UP') return '创建跟进任务'
-  return value
-}
-
-function approvalStatusLabel(value: string) {
-  if (value === 'APPROVED') return '审批已通过'
-  if (value === 'REJECTED') return '审批已拒绝'
-  if (value === 'EXPIRED') return '审批已过期'
-  return '审批已处理'
-}
-
-function riskText(value: string) {
-  if (value === 'HIGH') return '高'
-  if (value === 'MEDIUM') return '中'
-  return '低'
-}
-
-function approvalResultTone(approval: Approval) {
-  if (approval.status === 'REJECTED' || approval.status === 'EXPIRED' || approval.actionStatus === 'FAILED') return 'error'
-  if (approval.actionStatus === 'SUCCEEDED') return 'success'
-  return 'pending'
-}
-
-function approvalResultText(approval: Approval) {
-  if (approval.status === 'REJECTED') return '已拒绝，相关动作不会执行。'
-  if (approval.status === 'EXPIRED') return '审批已过期，未执行相关动作。'
-  if (approval.actionStatus === 'FAILED') return `审批已通过，但执行失败：${approval.failureMessage ?? '请检查配置后重新发起。'}`
-  if (approval.actionStatus === 'SUCCEEDED') return approval.actionType === 'SEND_EMAIL' ? '审批已通过，邮件发送成功。' : '审批已通过，业务动作执行成功。'
-  return '审批已通过，动作正在执行。'
-}
-
-function formatTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value))
-}
-
-function modelStatusLabel(status?: string) {
-  if (status === 'READY') return '可用'
-  if (status === 'MISSING_API_KEY') return '未配置 Key'
-  if (status === 'ENCRYPTION_KEY_UNAVAILABLE') return '密钥不可解密'
-  return status ?? '-'
-}
-
-function formatCompactNumber(value: number) {
-  return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
-}
-
-function InlineApproval({ approvalId }: { approvalId: string }) {
-  const isGuest = useIsGuest()
-  const queryClient = useQueryClient()
-  const query = useQuery({
-    queryKey: ['approval', approvalId],
-    queryFn: () => getApproval(approvalId),
-  })
-  const approveMutation = useMutation({
-    mutationFn: approveApproval,
-    onSuccess: (approval) => finishDecision(approval),
-  })
-  const rejectMutation = useMutation({
-    mutationFn: rejectApproval,
-    onSuccess: (approval) => finishDecision(approval),
-  })
-
-  function finishDecision(approval: Approval) {
-    queryClient.setQueryData(['approval', approvalId], approval)
-    void queryClient.invalidateQueries({ queryKey: ['approvals'] })
-    void queryClient.invalidateQueries({ queryKey: ['agent-runs'] })
-    void queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
-    void queryClient.invalidateQueries({ queryKey: ['customers'] })
-  }
-
-  if (query.isPending) {
-    return <section className="mcp-inline-approval is-loading"><CircleNotch size={16} className="mcp-spin" />正在读取审批状态</section>
-  }
-  if (query.isError || !query.data) {
-    return <section className="mcp-inline-approval is-error"><WarningCircle size={16} />审批状态暂时无法读取，请稍后重试</section>
-  }
-
-  const approval = query.data
-  const pending = approval.status === 'PENDING'
-  const busy = approveMutation.isPending || rejectMutation.isPending
-  const mutationError = approveMutation.error ?? rejectMutation.error
-  const to = previewText(approval.preview.to)
-  const subject = previewText(approval.preview.subject)
-  const body = previewText(approval.preview.body)
-  const attachments = previewAttachments(approval.preview.attachments)
-  return (
-    <section className={`mcp-inline-approval ${pending ? 'is-pending' : 'is-resolved'}`} aria-label="聊天内审批">
-      <header>
-        <span><ShieldCheck size={17} />{pending ? '高风险操作待确认' : approvalStatusLabel(approval.status)}</span>
-        <em className={`risk-label ${approval.riskLevel === 'HIGH' ? 'risk-high' : approval.riskLevel === 'MEDIUM' ? 'risk-medium' : 'risk-low'}`}>{riskText(approval.riskLevel)}风险</em>
-      </header>
-      <strong>{actionLabel(approval.actionType)} · {approval.customerName}</strong>
-      <p>{approval.reason}</p>
-      {approval.actionType === 'SEND_EMAIL' ? (
-        <dl>
-          <div><dt><EnvelopeSimple size={14} />收件人</dt><dd>{to ?? '未解析'}</dd></div>
-          <div><dt>主题</dt><dd>{subject ?? '(无主题)'}</dd></div>
-          {body ? <div><dt>正文</dt><dd className="mcp-inline-email-body">{body}</dd></div> : null}
-          <div><dt>附件</dt><dd>{attachments.length ? attachments.map((item) => item.name).join('、') : '无附件'}</dd></div>
-        </dl>
-      ) : null}
-      {pending ? (
-        <div className="mcp-inline-approval-actions">
-          <button type="button" className="button button-secondary" disabled={isGuest || busy} onClick={() => rejectMutation.mutate(approval)}><X size={15} />拒绝</button>
-          <button type="button" className="button button-primary" disabled={isGuest || busy} onClick={() => approveMutation.mutate(approval)}>
-            {approveMutation.isPending ? <CircleNotch size={15} className="mcp-spin" /> : <Check size={15} />}
-            {approval.actionType === 'SEND_EMAIL' ? '批准并发送' : '批准并执行'}
-          </button>
-        </div>
-      ) : (
-        <p className={`mcp-inline-approval-result is-${approvalResultTone(approval)}`}>{approvalResultText(approval)}</p>
-      )}
-      {mutationError ? <p className="mcp-inline-approval-error" role="alert">{mutationError.message}</p> : null}
-    </section>
-  )
-}
-
-function formatFileSize(value: number) {
-  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
-  if (value >= 1024) return `${Math.ceil(value / 1024)} KB`
-  return `${value} B`
-}
-
-function percentage(value: number, total: number) {
-  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0
-  return Math.max(0, Math.min(100, Math.round((value / total) * 100)))
-}
-
-function dataAttachments(data: Record<string, unknown> | null | undefined): UploadedFile[] {
-  const value = data?.attachments
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return []
-    const record = item as Record<string, unknown>
-    const id = typeof record.id === 'string' ? record.id : ''
-    const filename = typeof record.filename === 'string'
-      ? record.filename
-      : typeof record.name === 'string' ? record.name : ''
-    if (!id || !filename) return []
-    return [{
-      id,
-      customerId: typeof record.customerId === 'string' ? record.customerId : null,
-      filename,
-      contentType: typeof record.contentType === 'string' ? record.contentType : 'application/octet-stream',
-      sizeBytes: typeof record.sizeBytes === 'number' ? record.sizeBytes : 0,
-      sha256: typeof record.sha256 === 'string' ? record.sha256 : '',
-      createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
-    }]
-  })
 }
