@@ -40,9 +40,20 @@ public class PythonAiClient {
 
 	public Flux<PythonStreamEvent> streamAssistantReply(
 			AiModelRuntimeConfiguration configuration, String request, String verifiedResult) {
+		return streamAssistantReply(configuration, request, verifiedResult, "LIGHT", List.of());
+	}
+
+	public Flux<PythonStreamEvent> streamAssistantReply(
+			AiModelRuntimeConfiguration configuration,
+			String request,
+			String verifiedResult,
+			String mode,
+			List<Map<String, Object>> conversationHistory) {
 		var payload = modelPayload(configuration);
 		payload.put("user_request", request);
 		payload.put("verified_result", verifiedResult);
+		payload.put("mode", "AGENT".equalsIgnoreCase(mode) ? "AGENT" : "LIGHT");
+		payload.put("conversation_history", conversationHistory == null ? List.of() : conversationHistory);
 		return Flux.using(
 				() -> sendLines("/v1/chat/stream", payload),
 				lines -> Flux.fromStream(lines)
@@ -69,10 +80,24 @@ public class PythonAiClient {
 			String userMessage,
 			Map<String, Object> businessContext,
 			List<Map<String, Object>> availableTools) {
+		return planAgent(configuration, userMessage, "LIGHT", businessContext, availableTools, List.of(), List.of());
+	}
+
+	public PythonAgentPlan planAgent(
+			AiModelRuntimeConfiguration configuration,
+			String userMessage,
+			String mode,
+			Map<String, Object> businessContext,
+			List<Map<String, Object>> availableTools,
+			List<Map<String, Object>> conversationHistory,
+			List<Map<String, Object>> observations) {
 		var payload = modelPayload(configuration);
 		payload.put("user_message", userMessage);
+		payload.put("mode", "AGENT".equalsIgnoreCase(mode) ? "AGENT" : "LIGHT");
 		payload.put("business_context", businessContext);
 		payload.put("available_tools", availableTools);
+		payload.put("conversation_history", conversationHistory == null ? List.of() : conversationHistory);
+		payload.put("observations", observations == null ? List.of() : observations);
 		return post("/v1/agent/plan", payload, PythonAgentPlan.class);
 	}
 
@@ -199,6 +224,7 @@ public class PythonAiClient {
 	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 	public record PythonAgentDecision(
 			String intent,
+			String thought,
 			String response,
 			String toolName,
 			Map<String, Object> arguments,

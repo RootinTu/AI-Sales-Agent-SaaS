@@ -20,11 +20,36 @@ class ToolDefinition(BaseModel):
     )
 
 
+class ConversationTurn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    role: Literal["user", "assistant", "system", "USER", "ASSISTANT", "SYSTEM"] = "user"
+    content: str = ""
+
+
+class ToolObservation(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    step: int = 1
+    tool_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("tool_name", "toolName"),
+    )
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    status: str = "SUCCEEDED"
+    summary: str = ""
+    output: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentPlanRequest(ModelConfiguration):
     user_message: str = Field(
         min_length=1,
         max_length=4000,
         validation_alias=AliasChoices("user_message", "userMessage"),
+    )
+    mode: Literal["LIGHT", "AGENT"] = Field(
+        default="LIGHT",
+        validation_alias=AliasChoices("mode", "assistantMode"),
     )
     business_context: dict[str, Any] = Field(
         default_factory=dict,
@@ -35,10 +60,21 @@ class AgentPlanRequest(ModelConfiguration):
         max_length=100,
         validation_alias=AliasChoices("available_tools", "availableTools"),
     )
+    conversation_history: list[ConversationTurn] = Field(
+        default_factory=list,
+        max_length=20,
+        validation_alias=AliasChoices("conversation_history", "conversationHistory"),
+    )
+    observations: list[ToolObservation] = Field(
+        default_factory=list,
+        max_length=10,
+        validation_alias=AliasChoices("observations", "toolObservations"),
+    )
 
 
 class AgentDecision(BaseModel):
     intent: Literal["ANSWER", "BUSINESS_ACTION", "KNOWLEDGE_QUERY", "CLARIFY"]
+    thought: str = ""
     response: str = ""
     tool_name: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)

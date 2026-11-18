@@ -35,6 +35,9 @@ import com.yourcompany.salesagent.file.application.FileStorageService;
 import com.yourcompany.salesagent.file.domain.UploadedFile;
 import com.yourcompany.salesagent.followup.application.FollowUpService;
 import com.yourcompany.salesagent.interaction.application.InteractionService;
+import com.yourcompany.salesagent.mail.application.MailConversationService;
+import com.yourcompany.salesagent.opportunity.application.OpportunityService;
+import com.yourcompany.salesagent.commercial.application.QuoteService;
 import reactor.core.publisher.Flux;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -260,6 +263,102 @@ class AssistantStreamingTests {
         verifyNoInteractions(agentService);
         assertThat(saved.content()).contains("多个相似客户");
     }
+
+	@Test
+	void restrictsAgentModeToDesktopClientsAndSvipOrganizations() {
+		when(mapper.selectOrganizationPlanCode(principal.organizationId())).thenReturn("STARTER");
+
+		var webCaps = service.capabilities(principal, false);
+		assertThat(webCaps.agentModeAvailable()).isFalse();
+		assertThat(webCaps.availableModes()).containsExactly("LIGHT");
+		assertThatThrownBy(() -> service.beginStream(
+				principal,
+				new AssistantChatRequest(conversationId, "查客户并写邮件", null, "WEB", "AGENT"),
+				false))
+				.isInstanceOf(AssistantWorkflowException.class)
+				.hasMessageContaining("桌面客户端和企业 SVIP");
+
+		var desktopCaps = service.capabilities(principal, true);
+		assertThat(desktopCaps.agentModeAvailable()).isTrue();
+		assertThat(desktopCaps.desktopClient()).isTrue();
+		assertThat(desktopCaps.availableModes()).containsExactly("LIGHT", "AGENT");
+
+		when(mapper.selectOrganizationPlanCode(principal.organizationId())).thenReturn("SVIP");
+		var svipCaps = service.capabilities(principal, false);
+		assertThat(svipCaps.svip()).isTrue();
+		assertThat(svipCaps.agentModeAvailable()).isTrue();
+		assertThat(svipCaps.availableModes()).containsExactly("LIGHT", "AGENT");
+	}
+
+	@Test
+	void autonomousAgentExecutesMultiStepReactLoopWithMemoryAndDraftsApprovalEmail() {
+		when(mapper.selectOrganizationPlanCode(principal.organizationId())).thenReturn("SVIP");
+		var now = Instant.parse("2026-09-15T09:00:00Z");
+		var customerId = UUID.randomUUID();
+		var approvalId = UUID.randomUUID();
+		var runId = UUID.randomUUID();
+		var actionId = UUID.randomUUID();
+		var customer = new CustomerResponse(customerId, "云岚科技", null, "软件服务", "200-500",
+				CustomerStage.PROPOSAL, CustomerStatus.ACTIVE, CustomerSource.CHAT, principal.memberId(), "销售",
+				90, null, "发送报价", now, null,
+				new CustomerResponse.PrimaryContactResponse("林婉清", "lin@example.com", "13800000001"), now, now, 1);
+		when(customers.findCustomers(principal, "云岚科技", null, null, 0, 5))
+				.thenReturn(new Page<CustomerResponse>(1, 5).setRecords(List.of(customer)));
+
+		var historyRow = new AssistantMessageRow(
+				UUID.randomUUID(), principal.organizationId(), conversationId, "USER",
+				"昨天聊过云岚科技的需求", null, "[]", Map.of(), now.minusSeconds(60));
+		when(mapper.selectRecentMessages(principal.organizationId(), conversationId, 12))
+				.thenReturn(List.of(historyRow));
+
+		var source = new com.yourcompany.salesagent.knowledge.api.KnowledgeAnswerResponse.Source(
+				UUID.randomUUID(), UUID.randomUUID(), "私有化折扣政策", 0, 1, "九折需经理审批", 0.9, 1);
+		when(knowledge.ask(eq(principal), any()))
+				.thenReturn(new com.yourcompany.salesagent.knowledge.api.KnowledgeAnswerResponse("九折需经理审批。[资料 1]", List.of(source), null));
+		when(agentService.proposeIntelligentEmailFromMcpAssistant(
+				eq(principal), eq(customer), eq(conversationId), anyString(), anyString(), any(), anyList()))
+				.thenReturn(new SalesFollowUpAgentService.McpDocumentEmailResult(runId, approvalId, actionId, "lin@example.com", "云岚科技私有化方案跟进"));
+
+		var step1 = new AiOrchestrationClient.AgentStepPlan(
+				"BUSINESS_ACTION", "先查看云岚科技客户档案", "", "customer.detail", Map.of("customerName", "云岚科技"),
+				0.95, false, List.of(), new ModelUsage(10, 5, 15, 0L, null), "req-1", "test");
+		var step2 = new AiOrchestrationClient.AgentStepPlan(
+				"BUSINESS_ACTION", "再检索企业私有化折扣政策", "", "knowledge.query", Map.of("question", "私有化折扣政策"),
+				0.94, false, List.of(), new ModelUsage(12, 6, 18, 0L, null), "req-2", "test");
+		var step3 = new AiOrchestrationClient.AgentStepPlan(
+				"BUSINESS_ACTION", "综合痛点和折扣政策起草跟进邮件", "", "email.draft.intelligent",
+				Map.of("customerName", "云岚科技", "subject", "云岚科技私有化方案跟进", "body", "林总您好，结合贵司需求为您准备了私有化方案。"),
+				0.96, true, List.of(), new ModelUsage(14, 7, 21, 0L, null), "req-3", "test");
+
+		when(model.planAgentStep(any(), anyString(), eq("AGENT"), anyMap(), anyList(), anyList(), anyList()))
+				.thenReturn(step1, step2, step3);
+		when(model.streamAssistantReplyWithUsage(any(), anyString(), anyString(), eq("AGENT"), anyList()))
+				.thenReturn(Flux.just(new AiOrchestrationClient.StreamChunk("已完成多步检索并生成待审批定制邮件。", new ModelUsage(20, 10, 30, 0L, null), "req-4", "test")));
+
+		var richService = new AssistantChatService(
+				mapper, customers, mock(InteractionService.class),
+				agentService, approvals, mock(FollowUpService.class),
+				JsonMapper.builder().build(), Clock.systemUTC(), settings, model, modelCallRecorder,
+				fileStorageService, tx, knowledge,
+				mock(OpportunityService.class), mock(QuoteService.class), mock(MailConversationService.class));
+
+		richService.streamChat(principal, conversationId, "帮我查一下云岚科技和折扣政策并写跟进邮件", null, "AGENT", false, this::receive);
+
+		assertThat(saved.content()).isEqualTo("已完成多步检索并生成待审批定制邮件。");
+		assertThat(saved.data()).containsEntry("assistantMode", "AGENT");
+		assertThat(saved.data()).containsEntry("agentMultiStep", true);
+		assertThat(saved.data()).containsEntry("observationCount", 3);
+		assertThat(saved.data()).containsEntry("approvalId", approvalId);
+		assertThat(saved.data()).containsKey("knowledgeSources");
+		assertThat(saved.toolTraces()).extracting(AssistantChatResponse.AssistantToolTrace::name)
+				.contains("assistant.agent.step", "customer.detail", "knowledge.query", "email.draft.intelligent");
+		verify(model).streamAssistantReplyWithUsage(
+				any(),
+				anyString(),
+				anyString(),
+				eq("AGENT"),
+				argThat(hist -> !hist.isEmpty() && String.valueOf(hist.get(0).get("content")).contains("昨天聊过云岚科技")));
+	}
 
 	private static AiOrchestrationClient.AssistantPlan plan(String intent, String toolName, Map<String, Object> arguments) {
 		return new AiOrchestrationClient.AssistantPlan(

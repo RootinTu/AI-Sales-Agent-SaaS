@@ -39,7 +39,7 @@ export function AdminTeamPage() {
           {query.data ? <TeamSettingsForm key={query.data.updatedAt} team={query.data} /> : null}
         </section>
 
-        <aside className="surface admin-policy-card"><h2>权限边界</h2><div><ShieldCheck size={18} /><span><strong>团队所有者</strong><small>可以任命管理员、管理所有成员与团队配置。</small></span></div><div><ShieldCheck size={18} /><span><strong>管理员</strong><small>可以管理普通成员，但不能修改所有者或其他管理员。</small></span></div><div><UsersThree size={18} /><span><strong>业务角色</strong><small>主管、销售和只读成员不会看到管理员入口。</small></span></div></aside>
+        <aside className="surface admin-policy-card"><h2>权限边界与套餐</h2><div><ShieldCheck size={18} /><span><strong>团队所有者</strong><small>可以任命管理员、管理所有成员与团队配置。</small></span></div><div><ShieldCheck size={18} /><span><strong>管理员</strong><small>可以管理普通成员，但不能修改所有者或其他管理员。</small></span></div><div><UsersThree size={18} /><span><strong>业务角色</strong><small>主管、销售和只读成员不会看到管理员入口。</small></span></div><div><ShieldCheck size={18} /><span><strong>自主 Agent 模式权限</strong><small>{query.data?.planCode === 'SVIP' ? '当前为企业 SVIP 团队，Web 端与桌面客户端均可切换至自主 Agent 模式。' : '轻辅助模式全员可用；多步推理与上下文记忆的自主 Agent 模式仅向桌面客户端与企业 SVIP 团队开放。'}</small></span></div></aside>
       </div>
     </section>
   )

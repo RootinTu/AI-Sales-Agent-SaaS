@@ -7841,3 +7841,123 @@ a.metric-item:hover { background: var(--surface-subtle); }
   .customer-form-actions { gap: 8px; flex-wrap: wrap; }
   .customer-save-hint { display: none; }
 }
+
+/* AI Assistant: dual mode switcher (Light Assist vs Autonomous Agent) */
+.mcp-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.mcp-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid #dbe4f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  gap: 2px;
+}
+
+.mcp-mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #475569;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.mcp-mode-switch button:hover:not(:disabled) {
+  color: var(--ink);
+  background: rgb(255 255 255 / 70%);
+}
+
+.mcp-mode-switch button.is-active {
+  background: #fff;
+  color: var(--blue-700);
+  box-shadow: 0 1px 3px rgb(15 23 42 / 10%);
+}
+
+.mcp-mode-switch button.is-locked {
+  color: #64748b;
+}
+
+.mcp-mode-tag {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.mcp-mode-switch button.is-active .mcp-mode-tag {
+  background: #dbeafe;
+  color: var(--blue-700);
+}
+
+.mcp-mode-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 20px;
+  background: #fff7ed;
+  border-bottom: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcp-mode-notice button {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mcp-output-mode-badge {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 750;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: var(--blue-700);
+}
+
+.mcp-inline-email-body {
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  line-height: 1.55;
+  color: #334155;
+}
+
+@media (max-width: 780px) {
+  .mcp-chat-header {
+    height: auto;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+  }
+  .mcp-mode-tag {
+    display: none;
+  }
+}

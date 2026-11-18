@@ -90,4 +90,20 @@ describe('AssistantActivity', () => {
     expect(screen.getByText('已完成')).toBeVisible()
     expect(screen.queryByText('处理中')).not.toBeInTheDocument()
   })
+
+  it('展示自主 Agent 的多步推理思考和新增 CRM 工具步骤', () => {
+    render(<AssistantActivity
+      summary="自主 Agent 共执行 2 步工具推理（customer.detail → email.draft.intelligent）。"
+      traces={[
+        { name: 'assistant.agent.step', status: 'SUCCEEDED', summary: '第 1 步：先读取客户档案和报价历史' },
+        { name: 'customer.detail', status: 'SUCCEEDED', summary: '已读取客户「云岚科技」的全景档案' },
+        { name: 'email.draft.intelligent', status: 'SUCCEEDED', summary: '已生成定制邮件待审批' },
+      ]}
+    />)
+    const records = within(screen.getByRole('region', { name: '处理记录' }))
+    expect(records.getByText('自主推理规划')).toBeVisible()
+    expect(records.getByText('第 1 步：先读取客户档案和报价历史')).toBeVisible()
+    expect(records.getByText('读取客户全景档案')).toBeVisible()
+    expect(records.getByText('智能起草待审批邮件')).toBeVisible()
+  })
 })

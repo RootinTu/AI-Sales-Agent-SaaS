@@ -5,7 +5,9 @@ from langchain_core.messages import AIMessage
 from app.features.agent.schemas import (
     AgentDecision,
     AgentPlanRequest,
+    ConversationTurn,
     ToolDefinition,
+    ToolObservation,
 )
 from app.features.agent.workflow import create_agent_plan, validate
 from app.features.knowledge.schemas import KnowledgeCandidate
@@ -168,3 +170,68 @@ def test_knowledge_candidates_are_ranked_and_limited() -> None:
     assert {source.id for source in sources} == {"pricing", "email"}
     assert len(sources) == 2
     assert sources[0].score >= sources[1].score
+
+
+def test_agent_mode_includes_history_and_observations_and_prevents_duplicate_calls(monkeypatch) -> None:
+    captured_messages = []
+
+    class FakeStructuredModel:
+        async def ainvoke(self, messages):
+            captured_messages.extend(messages)
+            return {
+                "raw": AIMessage(content="", usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20}),
+                "parsed": AgentDecision(
+                    intent="BUSINESS_ACTION",
+                    thought="再次查一下客户详情",
+                    tool_name="customer.detail",
+                    arguments={"customerName": "云岚科技"},
+                    confidence=0.9,
+                ),
+                "parsing_error": None,
+            }
+
+    class FakeModel:
+        def with_structured_output(self, *_args, **_kwargs):
+            return FakeStructuredModel()
+
+    monkeypatch.setattr("app.features.agent.workflow.create_chat_model", lambda _request: FakeModel())
+    request = AgentPlanRequest(
+        **model_configuration(),
+        user_message="继续分析云岚科技",
+        mode="AGENT",
+        conversation_history=[ConversationTurn(role="user", content="我昨天聊过云岚科技")],
+        observations=[ToolObservation(
+            step=1,
+            tool_name="customer.detail",
+            arguments={"customerName": "云岚科技"},
+            status="SUCCEEDED",
+            summary="已查询客户",
+            output={"name": "云岚科技"},
+        )],
+        available_tools=[ToolDefinition(name="customer.detail", description="查询客户详情", required_fields=["customerName"])],
+    )
+    response = asyncio.run(create_agent_plan(request))
+    assert "我昨天聊过云岚科技" in captured_messages[1].content
+    assert "步骤 1: 工具=customer.detail" in captured_messages[1].content
+    assert response.decision.intent == "ANSWER"
+    assert response.decision.tool_name is None
+
+
+def test_agent_mode_routes_knowledge_query_to_tool_when_available() -> None:
+    request = AgentPlanRequest(
+        **model_configuration(),
+        user_message="私有化折扣审批流程是什么",
+        mode="AGENT",
+        available_tools=[ToolDefinition(name="knowledge.query", description="查知识库", required_fields=["question"])],
+    )
+    result = asyncio.run(validate({
+        "request": request,
+        "decision": AgentDecision(
+            intent="KNOWLEDGE_QUERY",
+            thought="需要先查企业知识库",
+            confidence=0.9,
+        ),
+    }))
+    assert result["decision"].intent == "BUSINESS_ACTION"
+    assert result["decision"].tool_name == "knowledge.query"
+    assert result["decision"].arguments == {"question": "私有化折扣审批流程是什么"}

@@ -113,6 +113,20 @@ class PythonAiClientTests {
 			assertThat(planRequestBody.get())
 					.contains("\"api_key\":\"secret-key\"")
 					.contains("\"user_message\":\"新增客户云岚科技\"");
+
+			var agentPlan = client.planAgent(
+					configuration,
+					"接着发邮件",
+					"AGENT",
+					Map.of(),
+					List.of(),
+					List.of(Map.of("role", "user", "content", "查一下云岚科技")),
+					List.of(Map.of("step", 1, "tool_name", "customer.detail", "status", "SUCCEEDED", "summary", "已查到", "output", Map.of())));
+			assertThat(agentPlan.decision().toolName()).isEqualTo("customer.create");
+			assertThat(planRequestBody.get())
+					.contains("\"mode\":\"AGENT\"")
+					.contains("\"conversation_history\"")
+					.contains("\"observations\"");
 		}
 		finally {
 			server.stop(0);

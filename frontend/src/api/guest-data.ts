@@ -52,6 +52,7 @@ export function getGuestData(path: string, extraParams?: unknown): unknown {
   const route = url.pathname
   if (route.startsWith('/api/v1/commercial/')) return commercialGuestData(route, p)
   if (route === '/api/v1/system/health') return { service: '模拟服务', status: 'UP', timestamp: now }
+  if (route === '/api/v1/mcp/capabilities') return { planCode: 'STARTER', svip: false, desktopClient: false, agentModeAvailable: false, defaultMode: 'LIGHT', availableModes: ['LIGHT'], unavailableReason: '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户', agentCapabilities: [] }
   if (route === '/api/v1/customers/metrics') return { total: 2, highIntent: 2, activeOpportunities: 2, averageScore: 89 }
   if (route === '/api/v1/customers/owners' || route === '/api/v1/leads/owners') return owners
   if (route === '/api/v1/customers') return page(filtered(customers, p, c => `${c.name} ${c.industry ?? ''} ${c.website ?? ''} ${c.primaryContact?.name ?? ''}`, c => c.stage, 'stage'), p)

@@ -5,7 +5,7 @@ from typing import Any, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
-from app.features.agent.prompts import PLANNER_SYSTEM_PROMPT
+from app.features.agent.prompts import AGENT_REACT_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.features.agent.schemas import AgentDecision, AgentPlanRequest, AgentPlanResponse
 from app.llm.factory import create_chat_model
 from app.llm.messages import message_metadata, message_text, message_usage
@@ -17,6 +17,7 @@ JSON_FALLBACK_PROMPT = """
 当前模型接口不支持结构化输出协议。请只返回一个 JSON 对象，不要使用 Markdown 代码块或补充说明。
 JSON 字段必须为：
 - intent: ANSWER、BUSINESS_ACTION、KNOWLEDGE_QUERY 或 CLARIFY
+- thought: 当前步骤的简短思考过程
 - response: 给用户的文字回复
 - tool_name: 候选工具名称；不调用工具时为 null
 - arguments: 工具参数对象
@@ -43,17 +44,54 @@ def _tool_catalog(request: AgentPlanRequest) -> str:
     )
 
 
+def _history_catalog(request: AgentPlanRequest) -> str:
+    if not request.conversation_history:
+        return "无历史对话。"
+    lines: list[str] = []
+    for turn in request.conversation_history[-10:]:
+        role_label = "用户" if turn.role.lower() == "user" else "助手"
+        lines.append(f"[{role_label}]: {turn.content[:600]}")
+    return "\n".join(lines)
+
+
+def _observations_catalog(request: AgentPlanRequest) -> str:
+    if not request.observations:
+        return "尚未执行任何工具（当前为第 1 步）。"
+    lines: list[str] = []
+    for obs in request.observations:
+        output_text = json.dumps(obs.output, ensure_ascii=False)
+        if len(output_text) > 1500:
+            output_text = output_text[:1500] + "...(截断)"
+        lines.append(
+            f"步骤 {obs.step}: 工具={obs.tool_name} | 参数={json.dumps(obs.arguments, ensure_ascii=False)} "
+            f"| 状态={obs.status} | 摘要={obs.summary} | 结果={output_text}"
+        )
+    return "\n".join(lines)
+
+
 def _planner_messages(request: AgentPlanRequest, *, json_fallback: bool = False) -> list[Any]:
-    system_prompt = PLANNER_SYSTEM_PROMPT
+    is_agent_mode = request.mode == "AGENT"
+    system_prompt = AGENT_REACT_SYSTEM_PROMPT if is_agent_mode else PLANNER_SYSTEM_PROMPT
     if json_fallback:
         system_prompt = f"{system_prompt}\n\n{JSON_FALLBACK_PROMPT}"
-    return [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=(
+    if is_agent_mode:
+        human_content = (
+            f"【工作模式】：AGENT（多步自主推理模式）\n\n"
+            f"【历史对话记忆】：\n{_history_catalog(request)}\n\n"
+            f"【当前用户请求】：\n{request.user_message}\n\n"
+            f"【业务上下文】：\n{request.business_context}\n\n"
+            f"【当前轮次已执行的工具观察结果（Observations）】：\n{_observations_catalog(request)}\n\n"
+            f"【可用工具】：\n{_tool_catalog(request)}"
+        )
+    else:
+        human_content = (
             f"用户请求：\n{request.user_message}\n\n"
             f"业务上下文：\n{request.business_context}\n\n"
             f"可用工具：\n{_tool_catalog(request)}"
-        )),
+        )
+    return [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=human_content),
     ]
 
 
@@ -118,16 +156,38 @@ async def validate(state: AgentState) -> AgentState:
     errors: list[str] = []
     requires_approval = False
 
+    if decision.intent == "KNOWLEDGE_QUERY" and request.mode == "AGENT" and "knowledge.query" in tools:
+        question = decision.arguments.get("question") or request.user_message
+        if not any(obs.tool_name == "knowledge.query" and obs.arguments.get("question") == question for obs in request.observations):
+            decision = decision.model_copy(update={
+                "intent": "BUSINESS_ACTION",
+                "tool_name": "knowledge.query",
+                "arguments": {"question": question},
+            })
+
     if decision.intent == "BUSINESS_ACTION":
         tool = tools.get(decision.tool_name or "")
         if tool is None:
             errors.append("计划引用了未授权工具")
             decision = decision.model_copy(update={"intent": "CLARIFY", "tool_name": None, "arguments": {}})
         else:
-            missing = [field for field in tool.required_fields if not decision.arguments.get(field)]
-            if missing:
-                errors.append("缺少必填参数: " + ", ".join(missing))
-            requires_approval = tool.risk_level == "HIGH"
+            if request.mode == "AGENT" and any(
+                obs.tool_name == decision.tool_name and obs.arguments == decision.arguments
+                for obs in request.observations
+            ):
+                decision = decision.model_copy(
+                    update={
+                        "intent": "ANSWER",
+                        "tool_name": None,
+                        "arguments": {},
+                        "response": decision.response or "已完成多步工具查询与执行。",
+                    }
+                )
+            else:
+                missing = [field for field in tool.required_fields if not decision.arguments.get(field)]
+                if missing:
+                    errors.append("缺少必填参数: " + ", ".join(missing))
+                requires_approval = tool.risk_level == "HIGH"
     elif decision.tool_name:
         errors.append("非业务动作不能携带工具")
         decision = decision.model_copy(update={"tool_name": None, "arguments": {}})

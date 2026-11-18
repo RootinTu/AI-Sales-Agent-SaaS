@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { streamMcpChatMessage } from './mcp-chat-api'
 import { saveAuthTokens } from '../auth/auth-token-storage'
 
-afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear() })
+afterEach(() => {
+  delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  vi.restoreAllMocks()
+  localStorage.clear()
+  sessionStorage.clear()
+})
 
 const finalResponse = { conversationId: 'c1', messageId: 'm1', content: '你好世界', role: 'assistant', reasoningSummary: '', toolTraces: [], data: {}, createdAt: '2026-09-08T00:00:00Z' }
 const frame = (type: string, data: unknown) => `event: ${type}\r\ndata: ${JSON.stringify(data)}\r\n\r\n`
@@ -72,5 +77,19 @@ describe('MCP SSE transport', () => {
       headers: { 'Content-Type': 'text/event-stream' },
     }))
     await expect(streamMcpChatMessage({ message: '查看待审批' }, vi.fn())).rejects.toThrow('结果保存失败')
+  })
+
+  it('桌面客户端运行时在请求头和请求体携带 DESKTOP 标识与 mode', async () => {
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const request = input as Request
+      expect(request.headers.get('X-Sales-Agent-Client')).toBe('DESKTOP')
+      const body = JSON.parse(await request.text())
+      expect(body.channel).toBe('DESKTOP')
+      expect(body.mode).toBe('AGENT')
+      return new Response(frame('done', finalResponse), { headers: { 'Content-Type': 'text/event-stream' } })
+    })
+    await expect(streamMcpChatMessage({ message: '查客户', mode: 'AGENT' }, vi.fn())).resolves.toEqual(finalResponse)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

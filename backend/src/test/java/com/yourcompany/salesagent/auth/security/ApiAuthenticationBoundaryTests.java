@@ -80,6 +80,7 @@ class ApiAuthenticationBoundaryTests {
             Arguments.of("GET", "/api/v1/commercial/contracts"),
             Arguments.of("GET", "/api/v1/commercial/receivables"),
             Arguments.of("GET", "/api/v1/knowledge/documents"),
+            Arguments.of("GET", "/api/v1/mcp/capabilities"),
             Arguments.of("GET", "/api/v1/mcp/conversations"),
             Arguments.of("GET", "/api/v1/approvals"),
             Arguments.of("GET", "/api/v1/agent-runs"),

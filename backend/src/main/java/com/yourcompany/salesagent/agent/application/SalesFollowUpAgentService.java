@@ -208,6 +208,99 @@ public class SalesFollowUpAgentService {
 		return new McpDocumentEmailResult(runId, approvalId, actionRequestId, to, subject);
 	}
 
+	@Transactional
+	public McpDocumentEmailResult proposeIntelligentEmailFromMcpAssistant(
+			AuthPrincipal principal,
+			CustomerResponse customer,
+			UUID conversationId,
+			String customSubject,
+			String customBody,
+			String customReason,
+			List<UUID> attachmentIds) {
+		var organizationId = principal.organizationId();
+		var now = clock.instant();
+		var configId = ensureDefaultConfig(organizationId, now);
+		var businessDate = LocalDate.ofInstant(now, DEFAULT_BUSINESS_ZONE);
+		var runId = UUID.randomUUID();
+		var actionRequestId = UUID.randomUUID();
+		var approvalId = UUID.randomUUID();
+		var triggerContext = new LinkedHashMap<String, Object>();
+		if (conversationId != null) {
+			triggerContext.put("conversationId", conversationId.toString());
+		}
+		triggerContext.put("customerIds", List.of(customer.id().toString()));
+		var safeAttachments = attachmentIds == null ? List.<UUID>of() : attachmentIds;
+		if (!safeAttachments.isEmpty()) {
+			triggerContext.put("attachmentIds", safeAttachments.stream().map(UUID::toString).toList());
+			triggerContext.put("attachmentSource", "MCP_ASSISTANT_AGENT");
+		}
+		triggerContext.put("intent", "INTELLIGENT_EMAIL_DRAFT");
+
+		mapper.insertRun(runId, organizationId, configId, principal.memberId(), "MCP_ASSISTANT", "RUNNING",
+				businessDate, null, triggerContext, inputSnapshot(principal, "MCP_ASSISTANT", triggerContext), now, now);
+		insertStep(organizationId, runId, customer.id(), 1, "SYSTEM", "自主 Agent 准备定制跟进邮件", "SUCCEEDED",
+				Map.of("attachmentCount", safeAttachments.size()), Map.of("customerName", customer.name()), now, now, null);
+
+		var files = resolveMcpAttachments(organizationId, triggerContext, customer.id());
+		var attachmentPreview = fileStorageService.preview(files);
+		var to = customer.primaryContact() == null ? null : customer.primaryContact().email();
+		if (!StringUtils.hasText(to)) {
+			to = mapper.selectNotificationEmail(organizationId, customer.id(), customer.ownerMemberId());
+		}
+		if (!StringUtils.hasText(to)) {
+			throw new AgentWorkflowException("客户「" + customer.name() + "」没有可用邮箱，请先补充主要联系人邮箱");
+		}
+		var subject = StringUtils.hasText(customSubject)
+				? customSubject.replaceAll("[\\r\\n]+", " ").strip()
+				: customer.name() + " 跟进方案与下一步沟通";
+		if (subject.length() > 200) {
+			subject = subject.substring(0, 200);
+		}
+		var contactName = customer.primaryContact() == null ? null : customer.primaryContact().name();
+		var greeting = StringUtils.hasText(contactName) ? contactName.strip() + "，您好：" : "您好：";
+		var body = StringUtils.hasText(customBody)
+				? customBody.strip()
+				: greeting + "\n\n结合我们近期的沟通记录，为您整理了下一步产品与合作建议，期待本周与您进一步对齐细节。\n\n祝好。";
+		var email = new LinkedHashMap<String, Object>();
+		email.put("to", to);
+		email.put("subject", subject);
+		email.put("body", body);
+		var payload = new LinkedHashMap<String, Object>();
+		payload.put("customerId", customer.id().toString());
+		payload.put("customerName", customer.name());
+		payload.put("email", email);
+		payload.put("to", to);
+		payload.put("subject", subject);
+		payload.put("body", body);
+		payload.put("attachmentRequired", !files.isEmpty());
+		payload.put("attachments", attachmentPreview);
+		var contentHash = sha256(payload.toString());
+		var reason = StringUtils.hasText(customReason)
+				? customReason.strip()
+				: "自主 Agent 根据客户历史沟通与档案起草定制邮件，需人工核对后发送";
+		var actionStepId = insertStep(organizationId, runId, customer.id(), 2, "ACTION_PROPOSED", "生成自主 Agent 定制邮件审批", "SUCCEEDED",
+				Map.of("attachmentCount", safeAttachments.size()),
+				Map.of("to", to, "subject", subject, "actionRequestId", actionRequestId.toString()), now, now, null);
+		mapper.insertActionRequest(
+				actionRequestId, organizationId, runId, actionStepId, customer.id(), principal.memberId(),
+				"SEND_EMAIL", "HIGH", "AWAITING_APPROVAL", "email.send", "v1", true, "REQUIRE_APPROVAL",
+				reason, payload, contentHash,
+				preview(customer.name(), "发送定制跟进邮件", 95, payload, "SEND_EMAIL"),
+				"mcp-agent-email:" + runId + ":" + customer.id(), now.plus(Duration.ofDays(7)));
+		mapper.insertApproval(approvalId, organizationId, actionRequestId, principal.memberId(), reason, contentHash,
+				now, now.plus(Duration.ofDays(7)));
+		insertStep(organizationId, runId, customer.id(), 3, "APPROVAL_WAIT", "等待人工确认邮件发送", "SUCCEEDED",
+				Map.of("actionRequestId", actionRequestId.toString()), Map.of("approvalId", approvalId.toString()),
+				now, now, null);
+		var summary = new LinkedHashMap<String, Object>();
+		summary.put("message", "自主 Agent 已生成定制跟进邮件，等待人工审批");
+		summary.put("pendingApprovals", 1);
+		summary.put("agentType", AGENT_TYPE);
+		summary.put("triggerType", "MCP_ASSISTANT");
+		mapper.completeRun(runId, organizationId, "WAITING_APPROVAL", 1, 1, 1, 0, 0, 1, summary, null, now);
+		return new McpDocumentEmailResult(runId, approvalId, actionRequestId, to, subject);
+	}
+
 	public record McpDocumentEmailResult(UUID runId, UUID approvalId, UUID actionRequestId, String to, String subject) {
 	}
 
