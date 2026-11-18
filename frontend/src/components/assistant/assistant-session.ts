@@ -1,0 +1,358 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  getMcpConversations,
+  getMcpMessages,
+  streamMcpChatMessage,
+  type AssistantMessage,
+  type AssistantMode,
+  type AssistantToolTrace,
+  type SendMcpChatMessageInput,
+} from '../../api/mcp-chat-api'
+import { getAiModelStatus } from '../../api/ai-settings-api'
+import { uploadFile, type UploadedFile } from '../../api/files-api'
+import { useIsGuest } from '../../auth/use-auth'
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  reasoningSummary?: string | null
+  traces?: AssistantToolTrace[]
+  attachments?: UploadedFile[]
+  data?: Record<string, unknown>
+  createdAt: string
+  streaming?: boolean
+  progress?: string
+  error?: string
+}
+
+export interface ComposerAttachment {
+  id: string
+  file: File
+  filename: string
+  sizeBytes: number
+  uploaded?: UploadedFile
+}
+
+export interface AssistantToolGuide {
+  tool: string
+  label: string
+  say: string
+  result: string
+}
+
+interface UseAssistantSessionOptions {
+  mode: AssistantMode
+  welcomeMessage: ChatMessage
+  guestDemoMessages: ChatMessage[]
+  pendingProgressText: string
+}
+
+/**
+ * 管理双模式助手的会话列表、消息历史、附件和 SSE 流式调用状态。
+ * 保持纯状态与回调输出（不向外返回 Ref），兼顾业务「轻辅助」与独立「自主 Agent」复用。
+ */
+export function useAssistantChatSession({
+  mode,
+  welcomeMessage,
+  guestDemoMessages,
+  pendingProgressText,
+}: UseAssistantSessionOptions) {
+  const isGuest = useIsGuest()
+  const queryClient = useQueryClient()
+  const [input, setInput] = useState('')
+  const [focusSignal, setFocusSignal] = useState(0)
+  const [activeConversationId, setActiveConversationId] = useState<string | undefined>()
+  const [messages, setMessages] = useState<ChatMessage[]>(() => (isGuest ? guestDemoMessages : [welcomeMessage]))
+  const [useLocalMessages, setUseLocalMessages] = useState(true)
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
+  const [uploadingAttachments, setUploadingAttachments] = useState(false)
+  const pendingId = useRef('')
+  const pendingConversationId = useRef<string | undefined>(undefined)
+  const busy = useRef(false)
+  const streamController = useRef<AbortController | null>(null)
+
+  const conversationsQuery = useQuery({
+    queryKey: ['mcp-conversations'],
+    queryFn: getMcpConversations,
+    enabled: !isGuest,
+  })
+
+  const messagesQuery = useQuery({
+    queryKey: ['mcp-messages', activeConversationId],
+    queryFn: () => getMcpMessages(activeConversationId!),
+    enabled: !isGuest && Boolean(activeConversationId),
+  })
+
+  const modelQuery = useQuery({
+    queryKey: ['ai-model-status'],
+    queryFn: getAiModelStatus,
+    enabled: !isGuest,
+  })
+
+  const conversations = conversationsQuery.data?.content ?? []
+  const quotaUnavailable = !isGuest && !modelQuery.isLoading && (
+    modelQuery.data?.usage?.memberAllocatedTokens == null
+    || (modelQuery.data.usage.memberRemainingTokens ?? 0) <= 0
+  )
+  const disabled = isGuest || quotaUnavailable
+  const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId)
+
+  const displayedMessages = useMemo(() => (useLocalMessages ? messages : (messagesQuery.data?.content ?? [])
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map(toChatMessage)), [useLocalMessages, messages, messagesQuery.data])
+  const chatMessages = displayedMessages.filter((message) => message.id !== 'welcome')
+
+  const chatMutation = useMutation({
+    retry: false,
+    mutationFn: (request: SendMcpChatMessageInput) => streamMcpChatMessage(request, (event) => {
+      if (event.type === 'meta') {
+        pendingConversationId.current = event.data.conversationId
+        return
+      }
+      setMessages((current) => current.map((message) => {
+        if (message.id !== pendingId.current) return message
+        if (event.type === 'delta') return { ...message, content: message.content + event.data.text }
+        if (event.type === 'progress') return { ...message, progress: event.data.text }
+        if (event.type === 'summary') return { ...message, reasoningSummary: event.data.text }
+        if (event.type === 'tool') {
+          return {
+            ...message,
+            traces: [
+              ...(message.traces ?? []).filter((trace) => !(trace.name === event.data.name && trace.status === 'RUNNING')),
+              event.data,
+            ],
+          }
+        }
+        if (event.type === 'error') return { ...message, error: event.data.message }
+        return message
+      }))
+    }, streamController.current?.signal),
+    onSuccess: (response) => {
+      setActiveConversationId(response.conversationId)
+      setAttachments([])
+      setMessages((current) => current.map((message) => message.id !== pendingId.current ? message : {
+        id: response.messageId,
+        role: 'assistant',
+        content: response.content,
+        reasoningSummary: response.reasoningSummary,
+        traces: response.toolTraces,
+        data: response.data,
+        createdAt: response.createdAt,
+        error: message.error,
+      }))
+      void queryClient.invalidateQueries({ queryKey: ['mcp-conversations'] })
+      void queryClient.invalidateQueries({ queryKey: ['mcp-messages', response.conversationId] })
+      void queryClient.invalidateQueries({ queryKey: ['agent-runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['approvals'] })
+      void queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
+      void queryClient.invalidateQueries({ queryKey: ['customers'] })
+      void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      void queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
+    },
+    onError: (error) => {
+      setMessages((current) => current.map((message) => message.id !== pendingId.current ? message : {
+        ...message,
+        streaming: false,
+        error: error instanceof Error ? error.message : '连接中断，请查看历史记录确认执行结果。',
+      }))
+      void queryClient.invalidateQueries({ queryKey: ['mcp-conversations'] })
+    },
+    onSettled: () => {
+      busy.current = false
+      streamController.current = null
+    },
+  })
+
+  useEffect(() => () => streamController.current?.abort(), [])
+
+  function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (!selectedFiles.length || chatMutation.isPending || uploadingAttachments) return
+    setAttachmentError('')
+    if (attachments.length + selectedFiles.length > 5) {
+      setAttachmentError('一次消息最多携带 5 个附件')
+      return
+    }
+    const oversized = selectedFiles.find((file) => file.size > 10 * 1024 * 1024)
+    if (oversized) {
+      setAttachmentError(`${oversized.name} 超过 10MB，请压缩后再上传`)
+      return
+    }
+    setAttachments((current) => [...current, ...selectedFiles.map((file) => ({
+      id: crypto.randomUUID(),
+      file,
+      filename: file.name,
+      sizeBytes: file.size,
+    }))])
+  }
+
+  function removeAttachment(fileId: string) {
+    if (chatMutation.isPending || uploadingAttachments) return
+    setAttachments((current) => current.filter((file) => file.id !== fileId))
+  }
+
+  async function submit(message = input) {
+    const content = message.trim()
+    if (!content || busy.current || disabled || uploadingAttachments) return
+    busy.current = true
+    setAttachmentError('')
+    setUploadingAttachments(true)
+    let submittedAttachments: UploadedFile[]
+    try {
+      submittedAttachments = await Promise.all(attachments.map((attachment) => (
+        attachment.uploaded ?? uploadFile(attachment.file)
+      )))
+      setAttachments((current) => current.map((attachment, index) => ({
+        ...attachment,
+        uploaded: submittedAttachments[index] ?? attachment.uploaded,
+      })))
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '附件上传失败，请重试')
+      busy.current = false
+      setUploadingAttachments(false)
+      return
+    }
+    setUploadingAttachments(false)
+    streamController.current = new AbortController()
+    pendingId.current = crypto.randomUUID()
+    setUseLocalMessages(true)
+    setMessages([...displayedMessages, {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content,
+      attachments: submittedAttachments,
+      createdAt: new Date().toISOString(),
+    }, {
+      id: pendingId.current,
+      role: 'assistant',
+      content: '',
+      streaming: true,
+      progress: pendingProgressText,
+      data: { assistantMode: mode },
+      createdAt: new Date().toISOString(),
+    }])
+    setInput('')
+    setAttachmentError('')
+    chatMutation.mutate({
+      conversationId: activeConversationId ?? pendingConversationId.current,
+      message: content,
+      attachmentIds: submittedAttachments.map((file) => file.id),
+      mode,
+    })
+  }
+
+  function applyToolTemplate(template: string) {
+    if (chatMutation.isPending) return
+    setInput(template)
+    setFocusSignal((count) => count + 1)
+  }
+
+  function startNewConversation() {
+    setActiveConversationId(undefined)
+    setUseLocalMessages(true)
+    pendingConversationId.current = undefined
+    setMessages([welcomeMessage])
+    setInput('')
+    setAttachments([])
+    setAttachmentError('')
+  }
+
+  function selectConversation(conversationId: string) {
+    setActiveConversationId(conversationId)
+    setUseLocalMessages(false)
+  }
+
+  const readableStatus = isGuest ? '演示会话' : chatMutation.isPending ? '正在执行' : activeConversation ? '历史已保存' : '新会话'
+
+  return {
+    isGuest,
+    input,
+    setInput,
+    focusSignal,
+    activeConversationId,
+    conversationsQuery,
+    messagesQuery,
+    modelQuery,
+    conversations,
+    quotaUnavailable,
+    disabled,
+    chatMessages,
+    isPending: chatMutation.isPending,
+    attachments,
+    attachmentError,
+    uploadingAttachments,
+    readableStatus,
+    handleAttachmentChange,
+    removeAttachment,
+    submit,
+    applyToolTemplate,
+    startNewConversation,
+    selectConversation,
+  }
+}
+
+export type AssistantChatSession = ReturnType<typeof useAssistantChatSession>
+
+function toChatMessage(message: AssistantMessage): ChatMessage {
+  return {
+    id: message.id,
+    role: message.role === 'user' ? 'user' : 'assistant',
+    content: message.content,
+    reasoningSummary: message.reasoningSummary,
+    traces: message.toolTraces,
+    attachments: dataAttachments(message.data),
+    data: message.data,
+    createdAt: message.createdAt,
+  }
+}
+
+export function shouldShowStreamError(message: ChatMessage) {
+  if (!message.error?.trim()) return false
+  return !message.content.includes(message.error.trim())
+}
+
+export function formatTime(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+export function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+export function formatFileSize(value: number) {
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+  if (value >= 1024) return `${Math.ceil(value / 1024)} KB`
+  return `${value} B`
+}
+
+function dataAttachments(data: Record<string, unknown> | null | undefined): UploadedFile[] {
+  const value = data?.attachments
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const record = item as Record<string, unknown>
+    const id = typeof record.id === 'string' ? record.id : ''
+    const filename = typeof record.filename === 'string'
+      ? record.filename
+      : typeof record.name === 'string' ? record.name : ''
+    if (!id || !filename) return []
+    return [{
+      id,
+      customerId: typeof record.customerId === 'string' ? record.customerId : null,
+      filename,
+      contentType: typeof record.contentType === 'string' ? record.contentType : 'application/octet-stream',
+      sizeBytes: typeof record.sizeBytes === 'number' ? record.sizeBytes : 0,
+      sha256: typeof record.sha256 === 'string' ? record.sha256 : '',
+      createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
+    }]
+  })
+}

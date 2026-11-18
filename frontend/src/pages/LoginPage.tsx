@@ -11,7 +11,9 @@ import { useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { login } from '../api/auth-api'
 import { ApiError, getApiBaseUrlSetting, saveApiBaseUrlSetting } from '../api/axios-client'
+import { isDesktopClient } from '../api/mcp-chat-api'
 import { enterGuestMode, leaveGuestMode } from '../auth/guest-session'
+import { DesktopStandaloneTitlebar } from '../desktop/DesktopWindowControls'
 
 interface LoginLocationState {
   from?: string
@@ -59,8 +61,12 @@ export function LoginPage() {
       ? '暂时无法连接登录服务，请稍后重试'
       : null
 
+  const desktop = isDesktopClient()
+
   return (
-    <main className="login-page">
+    <>
+      <DesktopStandaloneTitlebar />
+      <main className={desktop ? 'login-page has-desktop-titlebar' : 'login-page'}>
       <section className="login-story" aria-label="产品介绍">
         <div className="login-brand">
           <span className="brand-symbol" aria-hidden><img src="/brand-mark.png" alt="" /></span>
@@ -178,6 +184,7 @@ export function LoginPage() {
 
         <p className="login-help">账号由企业管理员创建，无法登录时请联系管理员。</p>
       </section>
-    </main>
+      </main>
+    </>
   )
 }
