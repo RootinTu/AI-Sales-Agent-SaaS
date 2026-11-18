@@ -1,6 +1,7 @@
 package com.yourcompany.salesagent.assistant.infrastructure;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -49,4 +50,11 @@ public interface AssistantConversationMapper {
 			Page<AssistantMessageRow> page,
 			@Param("organizationId") UUID organizationId,
 			@Param("conversationId") UUID conversationId);
+
+	List<AssistantMessageRow> selectRecentMessages(
+			@Param("organizationId") UUID organizationId,
+			@Param("conversationId") UUID conversationId,
+			@Param("limit") int limit);
+
+	String selectOrganizationPlanCode(@Param("organizationId") UUID organizationId);
 }

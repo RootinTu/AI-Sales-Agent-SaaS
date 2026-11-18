@@ -35,6 +35,10 @@ public class AssistantStreamTransport {
 	}
 
 	public SseEmitter open(AuthPrincipal principal, AssistantChatRequest request) {
+		return open(principal, request, "DESKTOP".equalsIgnoreCase(request.channel()));
+	}
+
+	public SseEmitter open(AuthPrincipal principal, AssistantChatRequest request, boolean desktopClient) {
 		if (!slots.tryAcquire()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "助手繁忙，请稍后再试");
 		var emitter = new SseEmitter(600_000L);
 		var disconnected = new AtomicBoolean();
@@ -53,12 +57,13 @@ public class AssistantStreamTransport {
 			workers.execute(new DelegatingSecurityContextRunnable(() -> {
 				ScheduledFuture<?> heartbeat = null;
 				try {
-					var conversationId = service.beginStream(principal, request);
+					var conversationId = service.beginStream(principal, request, desktopClient);
 					send.accept("meta", Map.of("conversationId", conversationId));
 					heartbeat = heartbeats.scheduleAtFixedRate(
 							() -> send.accept("ping", Map.of()), 15, 15, TimeUnit.SECONDS);
 					// 断开显示连接不重放或回滚已提交的业务动作，结果仍存入会话历史。
-					service.streamChat(principal, conversationId, request.message(), request.attachmentIds(), send);
+					service.streamChat(principal, conversationId, request.message(), request.attachmentIds(),
+							request.resolvedMode(), desktopClient, send);
 				} catch (AssistantWorkflowException exception) {
 					send.accept("error", Map.of("message", exception.getMessage()));
 				} catch (RuntimeException exception) {

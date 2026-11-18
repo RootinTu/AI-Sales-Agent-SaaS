@@ -1,10 +1,13 @@
-import { Check, CircleNotch, EnvelopeSimple, MagicWand, PaperPlaneTilt, Paperclip, PlusSquare, Robot, ShieldCheck, Sparkle, SquaresFour, UserCircle, WarningCircle, Wrench, X } from '@phosphor-icons/react'
+import { Check, CircleNotch, EnvelopeSimple, Lock, MagicWand, PaperPlaneTilt, Paperclip, PlusSquare, Robot, ShieldCheck, Sparkle, SquaresFour, UserCircle, WarningCircle, Wrench, X } from '@phosphor-icons/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ChangeEvent, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
+import * as mcpChatApi from '../api/mcp-chat-api'
 import {
   getMcpConversations,
   getMcpMessages,
   streamMcpChatMessage,
+  type AssistantCapabilities,
+  type AssistantMode,
   type SendMcpChatMessageInput,
   type AssistantMessage,
   type AssistantToolTrace,
@@ -67,6 +70,27 @@ const toolGuides = [
   },
 ]
 
+const agentToolGuides = [
+  {
+    tool: 'agent.react.email',
+    label: '全景分析并起草邮件',
+    say: '先查一下云岚科技最近的聊天记录和报价，结合企业知识库折扣政策，帮我起草一封有针对性的跟进邮件。',
+    result: '自主跨模块检索客户档案、沟通记录、报价和知识库，并撰写待审批定制邮件',
+  },
+  {
+    tool: 'agent.react.pipeline',
+    label: '商机与报价联动排查',
+    say: '帮我查一下当前进行中的商机和关联报价单，看看哪些客户需要先安排跟进任务。',
+    result: '多步读取商机与报价单状态，梳理推进优先级',
+  },
+  {
+    tool: 'agent.react.memory',
+    label: '连续多轮追问',
+    say: '帮我检索近期互动过的客户，列出最需要今天联系的 3 家并说明原因。',
+    result: '结合上下文记忆进行连续追问与多步执行',
+  },
+]
+
 const welcomeMessage: ChatMessage = {
   id: 'welcome',
   role: 'assistant',
@@ -90,6 +114,9 @@ export function McpAssistantPage() {
   const [attachmentError, setAttachmentError] = useState('')
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const [tokenAllocationOpen, setTokenAllocationOpen] = useState(false)
+  const [selectedMode, setSelectedMode] = useState<AssistantMode>('LIGHT')
+  const [modeNotice, setModeNotice] = useState('')
+  const desktopClient = typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
   const pendingId = useRef('')
   const pendingConversationId = useRef<string | undefined>(undefined)
   const busy = useRef(false)
@@ -114,6 +141,32 @@ export function McpAssistantPage() {
     queryFn: getAiModelStatus,
     enabled: !isGuest,
   })
+  const capabilitiesQuery = useQuery<AssistantCapabilities>({
+    queryKey: ['mcp-capabilities', desktopClient],
+    queryFn: () => typeof mcpChatApi.getMcpCapabilities === 'function'
+      ? mcpChatApi.getMcpCapabilities()
+      : Promise.resolve({
+        planCode: 'STARTER',
+        svip: false,
+        desktopClient,
+        agentModeAvailable: desktopClient,
+        defaultMode: 'LIGHT',
+        availableModes: desktopClient ? ['LIGHT', 'AGENT'] : ['LIGHT'],
+        unavailableReason: desktopClient ? null : '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户',
+        agentCapabilities: [],
+      }),
+    enabled: !isGuest,
+  })
+
+  const capabilities = capabilitiesQuery.data
+  const agentModeAvailable = !isGuest && Boolean(capabilities?.agentModeAvailable || desktopClient)
+  const activeMode: AssistantMode = agentModeAvailable ? selectedMode : 'LIGHT'
+  const activeGuides = activeMode === 'AGENT' ? agentToolGuides : toolGuides
+  const modeBadgeLabel = capabilities?.svip
+    ? '企业 SVIP'
+    : (capabilities?.desktopClient || desktopClient)
+      ? '桌面客户端'
+      : '客户端 / SVIP 专享'
 
   const conversations = conversationsQuery.data?.content ?? []
   const quotaUnavailable = !isGuest && !modelQuery.isLoading && (
@@ -124,8 +177,8 @@ export function McpAssistantPage() {
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId)
 
   const displayedMessages = useMemo(() => useLocalMessages ? messages : (messagesQuery.data?.content ?? [])
-      .filter((message) => message.role === 'user' || message.role === 'assistant')
-      .map(toChatMessage), [useLocalMessages, messages, messagesQuery.data])
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map(toChatMessage), [useLocalMessages, messages, messagesQuery.data])
   const chatMessages = displayedMessages.filter((message) => message.id !== 'welcome')
 
   const chatMutation = useMutation({
@@ -140,7 +193,15 @@ export function McpAssistantPage() {
         if (event.type === 'delta') return { ...message, content: message.content + event.data.text }
         if (event.type === 'progress') return { ...message, progress: event.data.text }
         if (event.type === 'summary') return { ...message, reasoningSummary: event.data.text }
-        if (event.type === 'tool') return { ...message, traces: [...(message.traces ?? []).filter((trace) => trace.name !== event.data.name), event.data] }
+        if (event.type === 'tool') {
+          return {
+            ...message,
+            traces: [
+              ...(message.traces ?? []).filter((trace) => !(trace.name === event.data.name && trace.status === 'RUNNING')),
+              event.data,
+            ],
+          }
+        }
         if (event.type === 'error') return { ...message, error: event.data.message }
         return message
       }))
@@ -164,6 +225,7 @@ export function McpAssistantPage() {
       void queryClient.invalidateQueries({ queryKey: ['approvals'] })
       void queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
+      void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
       void queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
     },
     onError: (error) => {
@@ -254,7 +316,8 @@ export function McpAssistantPage() {
       role: 'assistant',
       content: '',
       streaming: true,
-      progress: '正在连接助手…',
+      progress: activeMode === 'AGENT' ? '自主 Agent 正在启动多步规划…' : '正在连接助手…',
+      data: { assistantMode: activeMode },
       createdAt: new Date().toISOString(),
     }])
     setInput('')
@@ -263,7 +326,18 @@ export function McpAssistantPage() {
       conversationId: activeConversationId ?? pendingConversationId.current,
       message: content,
       attachmentIds: submittedAttachments.map((file) => file.id),
+      mode: activeMode,
     })
+  }
+
+  function handleSelectMode(nextMode: AssistantMode) {
+    if (chatMutation.isPending) return
+    if (nextMode === 'AGENT' && !agentModeAvailable) {
+      setModeNotice(capabilities?.unavailableReason ?? '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户')
+      return
+    }
+    setModeNotice('')
+    setSelectedMode(nextMode)
   }
 
   function applyToolTemplate(template: string) {
@@ -332,8 +406,40 @@ export function McpAssistantPage() {
         <section className="mcp-chat-panel">
           <header className="mcp-chat-header">
             <h1><SquaresFour size={18} />AI助手</h1>
-            <span className="mcp-status"><Sparkle size={14} />{readableStatus}</span>
+            <div className="mcp-header-actions">
+              <div className="mcp-mode-switch" role="group" aria-label="助手工作模式">
+                <button
+                  type="button"
+                  className={activeMode === 'LIGHT' ? 'is-active' : ''}
+                  disabled={chatMutation.isPending}
+                  onClick={() => handleSelectMode('LIGHT')}
+                >
+                  <MagicWand size={14} />
+                  <span>轻辅助模式</span>
+                </button>
+                <button
+                  type="button"
+                  className={`${activeMode === 'AGENT' ? 'is-active' : ''}${!agentModeAvailable ? ' is-locked' : ''}`}
+                  aria-disabled={!agentModeAvailable}
+                  disabled={chatMutation.isPending}
+                  title={agentModeAvailable ? '多步自主推理、上下文记忆与跨模块执行' : '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户'}
+                  onClick={() => handleSelectMode('AGENT')}
+                >
+                  {agentModeAvailable ? <Robot size={14} /> : <Lock size={13} />}
+                  <span>自主 Agent</span>
+                  <em className="mcp-mode-tag">{modeBadgeLabel}</em>
+                </button>
+              </div>
+              <span className="mcp-status"><Sparkle size={14} />{readableStatus}</span>
+            </div>
           </header>
+          {modeNotice ? (
+            <div className="mcp-mode-notice" role="status">
+              <Lock size={14} />
+              <span>{modeNotice}</span>
+              <button type="button" aria-label="关闭模式提示" onClick={() => setModeNotice('')}><X size={13} /></button>
+            </div>
+          ) : null}
           <div ref={messageListRef} className="mcp-message-list" aria-live="polite">
             {messagesQuery.isFetching && activeConversationId ? (
               <article className="mcp-message is-assistant">
@@ -345,9 +451,11 @@ export function McpAssistantPage() {
             ) : null}
             {chatMessages.length === 0 && !messagesQuery.isFetching ? (
               <div className="mcp-empty-chat">
-                <h2>销售自动化助手</h2>
+                <h2>{activeMode === 'AGENT' ? '自主销售 Agent 工作台' : '销售自动化助手'}</h2>
                 <p className="mcp-empty-intro">
-                  把客户资料、聊天记录、跟进建议和审批动作放在同一个工作流里，帮助销售团队更快整理线索、沉淀过程，并把需要人工确认的动作留在可追踪的记录中。
+                  {activeMode === 'AGENT'
+                    ? '已开启自主 Agent 模式：支持多轮上下文记忆、跨客户/互动/商机/报价/知识库多步推理，并结合客户痛点自动起草高转化待审批邮件。'
+                    : '把客户资料、聊天记录、跟进建议和审批动作放在同一个工作流里，帮助销售团队更快整理线索、沉淀过程，并把需要人工确认的动作留在可追踪的记录中。'}
                 </p>
               </div>
             ) : null}
@@ -378,7 +486,7 @@ export function McpAssistantPage() {
             }}
           >
             <div className="mcp-tool-capsules" aria-label="快捷操作">
-              {toolGuides.map((guide) => (
+              {activeGuides.map((guide) => (
                 <button
                   key={guide.tool}
                   type="button"
@@ -417,7 +525,13 @@ export function McpAssistantPage() {
                 event.preventDefault()
                 submit()
               }}
-              placeholder={isGuest ? '游客模式不能执行自动化操作' : quotaUnavailable ? '尚未分配 Token 额度，请联系管理员' : '例如：给云岚科技导入聊天。输入消息，按 Shift + Enter 换行，按 Enter 发送'}
+              placeholder={isGuest
+                ? '游客模式不能执行自动化操作'
+                : quotaUnavailable
+                  ? '尚未分配 Token 额度，请联系管理员'
+                  : activeMode === 'AGENT'
+                    ? '自主 Agent 模式：支持连续追问、跨模块查客户/商机/报价与知识库，并智能起草待审批邮件'
+                    : '例如：给云岚科技导入聊天。输入消息，按 Shift + Enter 换行，按 Enter 发送'}
               rows={2}
             />
             <div className="mcp-composer-footer">
@@ -441,7 +555,7 @@ export function McpAssistantPage() {
                   <Paperclip size={18} />
                 </button>
                 <span><Sparkle size={15} />{modelQuery.data?.model ?? 'qwen3.5-plus'}</span>
-                <span><MagicWand size={15} />智能模式</span>
+                <span>{activeMode === 'AGENT' ? <><Robot size={15} />自主 Agent 模式</> : <><MagicWand size={15} />轻辅助模式</>}</span>
                 {uploadingAttachments ? <span><CircleNotch size={15} className="mcp-spin" />正在上传附件</span> : null}
               </div>
               <button className="mcp-send-button" type="submit" aria-label="发送指令" disabled={mcpDisabled || chatMutation.isPending || uploadingAttachments || !input.trim()}>
@@ -632,7 +746,10 @@ function AssistantOutput({ message }: { message: ChatMessage }) {
         </div>
       ) : null}
       <section className="mcp-output-card">
-        <header><Sparkle size={14} />结果输出</header>
+        <header>
+          <Sparkle size={14} />结果输出
+          {message.data?.assistantMode === 'AGENT' ? <em className="mcp-output-mode-badge">自主 Agent</em> : null}
+        </header>
         <p>{message.content}{message.streaming && message.content ? <span className="mcp-stream-cursor" aria-hidden>▍</span> : null}</p>
       </section>
       {knowledgeSources.length > 0 && <div className="mcp-knowledge-sources" aria-label="知识库引用">{knowledgeSources.map((source, index) => <Link key={`${source.documentId}-${index}`} to={`/app/knowledge?document=${encodeURIComponent(source.documentId)}`}>[资料 {index + 1}] {source.title}{source.pageNumber ? ` · 第 ${source.pageNumber} 页` : ''}</Link>)}</div>}
@@ -784,6 +901,7 @@ function InlineApproval({ approvalId }: { approvalId: string }) {
   const mutationError = approveMutation.error ?? rejectMutation.error
   const to = previewText(approval.preview.to)
   const subject = previewText(approval.preview.subject)
+  const body = previewText(approval.preview.body)
   const attachments = previewAttachments(approval.preview.attachments)
   return (
     <section className={`mcp-inline-approval ${pending ? 'is-pending' : 'is-resolved'}`} aria-label="聊天内审批">
@@ -797,6 +915,7 @@ function InlineApproval({ approvalId }: { approvalId: string }) {
         <dl>
           <div><dt><EnvelopeSimple size={14} />收件人</dt><dd>{to ?? '未解析'}</dd></div>
           <div><dt>主题</dt><dd>{subject ?? '(无主题)'}</dd></div>
+          {body ? <div><dt>正文</dt><dd className="mcp-inline-email-body">{body}</dd></div> : null}
           <div><dt>附件</dt><dd>{attachments.length ? attachments.map((item) => item.name).join('、') : '无附件'}</dd></div>
         </dl>
       ) : null}

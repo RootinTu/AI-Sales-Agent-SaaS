@@ -76,7 +76,7 @@ public class SecurityConfiguration {
 		var configuration = new CorsConfiguration();
 		configuration.setAllowedOriginPatterns(allowedOriginPatterns);
 		configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-		configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "X-Sales-Agent-Access-Token"));
+		configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "X-Sales-Agent-Access-Token", "X-Sales-Agent-Client"));
 		configuration.setExposedHeaders(List.of(
 				"X-Sales-Agent-Auth-Token",
 				"X-Sales-Agent-Auth-Authorization",

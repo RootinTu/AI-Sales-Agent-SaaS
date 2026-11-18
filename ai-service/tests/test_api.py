@@ -105,3 +105,25 @@ def test_knowledge_query_without_candidates_does_not_call_model() -> None:
     assert response.status_code == 200
     assert response.json()["sources"] == []
     assert "没有找到" in response.json()["content"]
+
+
+def test_stream_endpoint_accepts_agent_mode_and_history(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_stream(request) -> AsyncIterator[StreamEvent]:
+        captured["mode"] = request.mode
+        captured["history"] = request.conversation_history
+        yield StreamEvent(type="delta", text="自主模式回复", model="test-model")
+
+    monkeypatch.setattr("app.features.chat.service.stream_assistant_reply", fake_stream)
+    payload = configuration() | {
+        "user_request": "跟进他",
+        "verified_result": "已查到云岚科技",
+        "mode": "AGENT",
+        "conversation_history": [{"role": "user", "content": "先看云岚科技"}],
+    }
+    response = TestClient(app).post("/v1/chat/stream", json=payload)
+    assert response.status_code == 200
+    assert captured["mode"] == "AGENT"
+    assert len(captured["history"]) == 1
+    assert '"text": "自主模式回复"' in response.text

@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  getMcpCapabilities,
   getMcpConversations,
   getMcpMessages,
   streamMcpChatMessage,
@@ -21,6 +22,7 @@ vi.mock('../auth/use-auth', () => ({
 }))
 
 vi.mock('../api/mcp-chat-api', () => ({
+  getMcpCapabilities: vi.fn(),
   getMcpConversations: vi.fn(),
   getMcpMessages: vi.fn(),
   streamMcpChatMessage: vi.fn(),
@@ -81,6 +83,16 @@ describe('McpAssistantPage', () => {
     vi.mocked(updateMemberTokenQuota).mockReset()
     vi.mocked(getTeamTokenBudget).mockResolvedValue({ totalTokens: 100_000, allocatedTokens: 0, unallocatedTokens: 100_000 })
     vi.mocked(updateTeamTokenBudget).mockReset()
+    vi.mocked(getMcpCapabilities).mockResolvedValue({
+      planCode: 'STARTER',
+      svip: false,
+      desktopClient: false,
+      agentModeAvailable: false,
+      defaultMode: 'LIGHT',
+      availableModes: ['LIGHT'],
+      unavailableReason: '自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户',
+      agentCapabilities: [],
+    })
     vi.mocked(getMcpConversations).mockResolvedValue({
       content: [],
       page: 0,
@@ -104,6 +116,7 @@ describe('McpAssistantPage', () => {
     vi.mocked(getApproval).mockReset()
     vi.mocked(approveApproval).mockReset()
     vi.mocked(rejectApproval).mockReset()
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
   afterEach(() => {
@@ -417,5 +430,97 @@ describe('McpAssistantPage', () => {
     await waitFor(() => expect(approveApproval).toHaveBeenCalled())
     expect(vi.mocked(approveApproval).mock.calls[0]?.[0]).toEqual(pendingApproval)
     expect(await screen.findByText('审批已通过，邮件发送成功。')).toBeInTheDocument()
+  })
+
+  it('Web 普通版用户锁定自主 Agent 模式并提示专享权限', async () => {
+    const user = userEvent.setup()
+    renderMcpAssistantPage()
+
+    const agentButton = await screen.findByRole('button', { name: /自主 Agent/ })
+    expect(agentButton).toHaveAttribute('aria-disabled', 'true')
+    await user.click(agentButton)
+    expect(await screen.findByText(/自主 Agent 模式仅开放给桌面客户端和企业 SVIP 用户/)).toBeInTheDocument()
+
+    vi.mocked(streamMcpChatMessage).mockResolvedValue({
+      conversationId: 'c1',
+      messageId: 'm1',
+      role: 'assistant',
+      content: '好的',
+      reasoningSummary: null,
+      toolTraces: [],
+      data: { assistantMode: 'LIGHT' },
+      createdAt: '2026-09-15T08:00:00Z',
+    })
+    await user.type(screen.getByPlaceholderText(/给云岚科技导入聊天/), '查看待审批')
+    await user.click(screen.getByRole('button', { name: /发送指令/ }))
+    await waitFor(() => expect(streamMcpChatMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'LIGHT' }),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    ))
+  })
+
+  it('企业 SVIP 用户可自由切换到自主 Agent 模式并发送 AGENT 指令', async () => {
+    vi.mocked(getMcpCapabilities).mockResolvedValue({
+      planCode: 'SVIP',
+      svip: true,
+      desktopClient: false,
+      agentModeAvailable: true,
+      defaultMode: 'LIGHT',
+      availableModes: ['LIGHT', 'AGENT'],
+      unavailableReason: null,
+      agentCapabilities: ['多轮记忆', 'ReAct 多步推理'],
+    })
+    vi.mocked(streamMcpChatMessage).mockResolvedValue({
+      conversationId: 'c2',
+      messageId: 'm2',
+      role: 'assistant',
+      content: '已完成多步推理与起草。',
+      reasoningSummary: '自主 Agent 共执行 2 步工具推理',
+      toolTraces: [{ name: 'assistant.agent.step', status: 'SUCCEEDED', summary: '第 1 步：查客户档案' }],
+      data: { assistantMode: 'AGENT' },
+      createdAt: '2026-09-15T08:00:00Z',
+    })
+    const user = userEvent.setup()
+    renderMcpAssistantPage()
+
+    const agentButton = await screen.findByRole('button', { name: /自主 Agent/ })
+    await waitFor(() => expect(agentButton).toHaveAttribute('aria-disabled', 'false'))
+    expect(screen.getByText('企业 SVIP')).toBeInTheDocument()
+
+    await user.click(agentButton)
+    expect(await screen.findByRole('button', { name: '套用全景分析并起草邮件模板' })).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText(/自主 Agent 模式/), '查云岚科技报价并写邮件')
+    await user.click(screen.getByRole('button', { name: /发送指令/ }))
+
+    await waitFor(() => expect(streamMcpChatMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'AGENT' }),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    ))
+    expect(await screen.findByText('已完成多步推理与起草。')).toBeInTheDocument()
+  })
+
+  it('桌面客户端用户无需 SVIP 也可切换至自主 Agent 模式', async () => {
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    vi.mocked(getMcpCapabilities).mockResolvedValue({
+      planCode: 'STARTER',
+      svip: false,
+      desktopClient: true,
+      agentModeAvailable: true,
+      defaultMode: 'LIGHT',
+      availableModes: ['LIGHT', 'AGENT'],
+      unavailableReason: null,
+      agentCapabilities: [],
+    })
+    const user = userEvent.setup()
+    renderMcpAssistantPage()
+
+    const agentButton = await screen.findByRole('button', { name: /自主 Agent/ })
+    expect(agentButton).toHaveAttribute('aria-disabled', 'false')
+    expect(screen.getByText('桌面客户端')).toBeInTheDocument()
+    await user.click(agentButton)
+    expect(screen.getByPlaceholderText(/自主 Agent 模式/)).toBeInTheDocument()
   })
 })

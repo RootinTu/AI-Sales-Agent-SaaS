@@ -25,7 +25,16 @@ public class AiOrchestrationClient {
 
 	public reactor.core.publisher.Flux<StreamChunk> streamAssistantReplyWithUsage(
 			AiModelRuntimeConfiguration configuration, String request, String verifiedResult) {
-		return pythonAiClient.streamAssistantReply(configuration, request, verifiedResult)
+		return streamAssistantReplyWithUsage(configuration, request, verifiedResult, "LIGHT", List.of());
+	}
+
+	public reactor.core.publisher.Flux<StreamChunk> streamAssistantReplyWithUsage(
+			AiModelRuntimeConfiguration configuration,
+			String request,
+			String verifiedResult,
+			String mode,
+			List<Map<String, Object>> conversationHistory) {
+		return pythonAiClient.streamAssistantReply(configuration, request, verifiedResult, mode, conversationHistory)
 				.map(event -> new StreamChunk(
 						event.text(),
 						event.usage() == null ? null : event.usage().toModelUsage(),
@@ -66,6 +75,31 @@ public class AiOrchestrationClient {
 				response.model());
 	}
 
+	public AgentStepPlan planAgentStep(
+			AiModelRuntimeConfiguration configuration,
+			String userMessage,
+			String mode,
+			Map<String, Object> businessContext,
+			List<Map<String, Object>> availableTools,
+			List<Map<String, Object>> conversationHistory,
+			List<Map<String, Object>> observations) {
+		var response = pythonAiClient.planAgent(
+				configuration, userMessage, mode, businessContext, availableTools, conversationHistory, observations);
+		var decision = response.decision();
+		return new AgentStepPlan(
+				decision.intent(),
+				decision.thought(),
+				decision.response(),
+				decision.toolName(),
+				decision.arguments() == null ? Map.of() : decision.arguments(),
+				decision.confidence(),
+				response.requiresApproval(),
+				response.validationErrors() == null ? List.of() : response.validationErrors(),
+				response.usage() == null ? null : response.usage().toModelUsage(),
+				response.providerRequestId(),
+				response.model());
+	}
+
 	public record ChatResult(String content, ModelUsage usage, String providerRequestId, String model) {
 	}
 
@@ -74,6 +108,20 @@ public class AiOrchestrationClient {
 
 	public record AssistantPlan(
 			String intent,
+			String response,
+			String toolName,
+			Map<String, Object> arguments,
+			Double confidence,
+			boolean requiresApproval,
+			List<String> validationErrors,
+			ModelUsage usage,
+			String providerRequestId,
+			String model) {
+	}
+
+	public record AgentStepPlan(
+			String intent,
+			String thought,
 			String response,
 			String toolName,
 			Map<String, Object> arguments,

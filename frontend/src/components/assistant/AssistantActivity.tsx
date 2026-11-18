@@ -10,16 +10,25 @@ interface Props {
 
 const steps: Record<string, { title: string; result: string }> = {
   'assistant.langgraph.plan': { title: '理解你的需求', result: '已分析你的需求，后续操作请查看下方记录。' },
+  'assistant.agent.step': { title: '自主推理规划', result: '已完成本步思考与决策。' },
   'assistant.router': { title: '查看可用功能', result: '已提供可用功能与示例，本步骤没有修改业务资料。' },
   'assistant.history.parse': { title: '读取历史处理记录', result: '已读取历史处理记录。' },
   'customer.search': { title: '查找客户', result: '已完成客户查询，匹配情况请查看回复。' },
+  'customer.detail': { title: '读取客户全景档案', result: '已读取客户档案、联系人、商机及互动摘要。' },
   'customer.create': { title: '新增客户档案', result: '已创建客户档案，可在客户列表中查看。' },
+  'interaction.list': { title: '查阅客户沟通记录', result: '已读取客户近期聊天、电话或邮件记录。' },
   'interaction.chat_import': { title: '保存客户聊天记录', result: '聊天记录已保存，可在客户的互动记录中查看。' },
+  'opportunity.list': { title: '查询关联商机', result: '已获取相关商机阶段、金额及下一步计划。' },
+  'opportunity.create': { title: '创建销售商机', result: '已为客户创建新的销售商机。' },
+  'quote.list': { title: '查询历史报价单', result: '已读取客户关联报价与金额状态。' },
+  'mail.list': { title: '查阅往来邮件', result: '已检索相关邮件往来记录。' },
   'agent.sales_follow_up.run': { title: '发起客户跟进分析', result: '已发起跟进分析，可在运行记录中核对结果与建议。' },
+  'email.draft.intelligent': { title: '智能起草待审批邮件', result: '已结合上下文生成定制邮件并提交审批，未直接发送。' },
   'email.send.prepare': { title: '准备发送邮件', result: '邮件已准备好，需审批通过后才能发送；本步骤不代表邮件已发送。' },
   'approval.list': { title: '查询待审批事项', result: '已查询待审批事项，具体数量请查看回复。' },
   'approval.approve': { title: '审批并处理后续操作', result: '已完成审批处理，后续操作结果请查看回复或审批记录。' },
   'follow_up.list': { title: '查询跟进任务', result: '已查询跟进任务，具体结果请查看回复。' },
+  'follow_up.create': { title: '创建跟进任务', result: '已创建客户跟进任务。' },
   'knowledge.query': { title: '查阅企业知识库', result: '已完成资料查询，回答和引用来源请查看回复。' },
 }
 
@@ -60,7 +69,7 @@ function traceStatus(trace: AssistantToolTrace) {
 
 export function AssistantActivity({ summary, traces, data }: Props) {
   const intent = intentOf(data, traces)
-  const hasOtherSteps = traces.some(trace => trace.name !== 'assistant.langgraph.plan')
+  const hasOtherSteps = traces.some(trace => trace.name !== 'assistant.langgraph.plan' && trace.name !== 'assistant.agent.step')
   const blocked = (Array.isArray(data?.assistantPlanValidationErrors) && data.assistantPlanValidationErrors.length > 0)
     || /阻止执行|校验未通过|校验.*失败/.test(summary ?? '')
   const planner = traces.find(trace => trace.name === 'assistant.langgraph.plan')

@@ -147,4 +147,28 @@
         ORDER BY created_at ASC, id ASC
     </select>
 
+    <select id="selectRecentMessages" resultMap="MessageMap">
+        SELECT id,
+               organization_id,
+               conversation_id,
+               role,
+               content,
+               reasoning_summary,
+               tool_traces::text AS tool_traces_json,
+               data,
+               created_at
+        FROM assistant_message
+        WHERE organization_id = #{organizationId}
+          AND conversation_id = #{conversationId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectOrganizationPlanCode" resultType="java.lang.String">
+        SELECT plan_code
+        FROM organization
+        WHERE id = #{organizationId}
+        LIMIT 1
+    </select>
+
 </mapper>

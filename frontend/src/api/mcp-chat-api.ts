@@ -1,9 +1,22 @@
 import { apiClient, getJson, requestJson } from './axios-client'
 
+export type AssistantMode = 'LIGHT' | 'AGENT'
+
 export interface AssistantToolTrace {
   name: string
   status: string
   summary: string
+}
+
+export interface AssistantCapabilities {
+  planCode: string
+  svip: boolean
+  desktopClient: boolean
+  agentModeAvailable: boolean
+  defaultMode: AssistantMode
+  availableModes: AssistantMode[]
+  unavailableReason: string | null
+  agentCapabilities: string[]
 }
 
 export interface AssistantConversation {
@@ -62,6 +75,21 @@ export interface SendMcpChatMessageInput {
   conversationId?: string
   message: string
   attachmentIds?: string[]
+  mode?: AssistantMode
+}
+
+export function isDesktopClient() {
+  return typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+}
+
+function clientHeaders() {
+  return isDesktopClient() ? { 'X-Sales-Agent-Client': 'DESKTOP' } : undefined
+}
+
+export function getMcpCapabilities() {
+  return getJson<AssistantCapabilities>('/api/v1/mcp/capabilities', {
+    headers: clientHeaders(),
+  })
 }
 
 export function getMcpConversations() {
@@ -73,9 +101,17 @@ export function getMcpMessages(conversationId: string) {
 }
 
 export function sendMcpChatMessage(input: SendMcpChatMessageInput) {
+  const desktop = isDesktopClient()
   return requestJson<AssistantChatResponse>('/api/v1/mcp/chat', {
     method: 'POST',
-    data: { conversationId: input.conversationId, message: input.message, attachmentIds: input.attachmentIds, channel: 'WEB' },
+    headers: desktop ? { 'X-Sales-Agent-Client': 'DESKTOP' } : undefined,
+    data: {
+      conversationId: input.conversationId,
+      message: input.message,
+      attachmentIds: input.attachmentIds,
+      channel: desktop ? 'DESKTOP' : 'WEB',
+      mode: input.mode ?? 'LIGHT',
+    },
   })
 }
 
@@ -99,12 +135,17 @@ export async function streamMcpChatMessage(
   const deadline = window.setTimeout(abort, 660_000)
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   try {
+    const desktop = isDesktopClient()
     const response = await apiClient.post<ReadableStream<Uint8Array>>('/api/v1/mcp/chat/stream', {
       ...input,
-      channel: window.__TAURI_INTERNALS__ ? 'DESKTOP' : 'WEB',
+      channel: desktop ? 'DESKTOP' : 'WEB',
+      mode: input.mode ?? 'LIGHT',
     }, {
       responseType: 'stream',
-      headers: { Accept: 'text/event-stream' },
+      headers: {
+        Accept: 'text/event-stream',
+        ...(desktop ? { 'X-Sales-Agent-Client': 'DESKTOP' } : {}),
+      },
       timeout: 0,
       signal: controller.signal,
     })
