@@ -14,7 +14,7 @@ on:
       release_tag:
         description: "GitHub Release tag，例如 desktop-v0.1.5"
         required: true
-        default: "desktop-v1.5.0"
+        default: "desktop-v1.5.1"
       prerelease:
         description: "是否发布为预发布版本"
         required: true
@@ -81,14 +81,15 @@ jobs:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: AI Sales Agent Desktop ${{ inputs.release_tag || github.ref_name }}
           releaseBody: |
-            AI Sales Agent 1.5.0。
+            AI Sales Agent 1.5.1。
 
-            - 智能助手升级双模式：保留默认轻辅助模式，面向桌面端客户端与企业 SVIP 用户开放自主 Agent 模式。
-            - 自主 Agent 支持多轮对话记忆、5 步 ReAct 自主规划与错误自修正，扩展 17 项 CRM/知识库/跟进工具及个性化邮件审批生成。
-            - 服务端校验桌面客户端标识与企业 SVIP 套餐权限，并新增 V20 数据库迁移兼容 AGENT_PLAN 审计记录。
-            - 包含 1.4.1 优化：企业知识库与问答支持 Markdown 预览及 GB18030 中文编码，补齐客户邮件、跟进及收信配置功能引导。
+            - 全新自定义顶部栏：一级切换「全部业务」与「自主 Agent」，默认保持原有业务菜单与用法。
+            - 自主 Agent 独立工作空间：与业务侧栏彻底分离，集成多轮会话、运行历史轨迹与工具能力说明（桌面端 / 企业 SVIP 专享）。
+            - 桌面端改为无边框窗口，最小化、最大化、关闭按钮融合进顶部栏，支持拖拽移动窗口。
+            - 业务区「MCP 助手」专注轻辅助模式；顶栏显示当前客户端版本号。
+            - 修复窄屏与高缩放比例下助手顶栏内容被遮挡的问题。
 
-            完整发布说明见仓库 docs/releases/1.5.0.md。
+            完整发布说明见仓库 docs/releases/1.5.1.md。
 
             - Windows 安装包由 Tauri / NSIS 生成。
             - latest.json 用于桌面端自动更新。

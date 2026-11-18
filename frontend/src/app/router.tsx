@@ -77,6 +77,12 @@ export const router = createBrowserRouter([
         }),
       },
       {
+        path: 'agent',
+        lazy: async () => ({
+          Component: (await import('../pages/AgentWorkspacePage')).AgentWorkspacePage,
+        }),
+      },
+      {
         path: 'knowledge',
         lazy: async () => ({ Component: (await import('../pages/KnowledgePage')).KnowledgePage }),
       },
