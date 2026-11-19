@@ -1,6 +1,7 @@
 package com.yourcompany.salesagent.admin.api;
 
 import java.net.URI;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
@@ -64,6 +65,23 @@ public class AdminController {
 			@PathVariable UUID memberId,
 			@Valid @RequestBody AdminMemberUpdateRequest request) {
 		return adminService.updateMember(principal(authentication), memberId, request);
+	}
+
+	@PutMapping("/members/{memberId}/password")
+	public ResponseEntity<Void> resetMemberPassword(
+			Authentication authentication,
+			@PathVariable UUID memberId,
+			@Valid @RequestBody AdminMemberPasswordResetRequest request) {
+		adminService.resetMemberPassword(principal(authentication), memberId, request);
+		return ResponseEntity.noContent().build();
+	}
+
+	@PostMapping("/members/{memberId}/revoke-sessions")
+	public Map<String, Integer> revokeMemberSessions(
+			Authentication authentication,
+			@PathVariable UUID memberId) {
+		int revoked = adminService.revokeMemberSessions(principal(authentication), memberId);
+		return Map.of("revokedSessions", revoked);
 	}
 
 	@PutMapping("/members/{memberId}/token-quota")

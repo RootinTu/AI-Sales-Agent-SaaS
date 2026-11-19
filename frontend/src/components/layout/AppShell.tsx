@@ -132,9 +132,7 @@ function Sidebar({
   return (
     <aside className={`app-sidebar${open ? ' is-open' : ''}`} aria-label="应用导航">
       <div className="sidebar-brand">
-        <span className="sidebar-brand-lockup">
-          <img src="/brand-lockup-source.png" alt="AI Sales Agent SaaS" />
-        </span>
+        <span className="sidebar-drawer-title">导航菜单</span>
         <button className="icon-button sidebar-close" type="button" onClick={onClose} aria-label="关闭导航">
           <X size={18} />
         </button>

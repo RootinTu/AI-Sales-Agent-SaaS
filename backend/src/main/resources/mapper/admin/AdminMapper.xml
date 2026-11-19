@@ -154,6 +154,18 @@
           AND revoked_at IS NULL
     </update>
 
+    <update id="updateMemberPassword">
+        UPDATE local_user_credential
+        SET password_hash = #{passwordHash},
+            updated_at = #{now}
+        WHERE user_id = (
+            SELECT user_id
+            FROM organization_member
+            WHERE organization_id = #{organizationId}
+              AND id = #{memberId}
+        )
+    </update>
+
     <update id="updateTeam">
         UPDATE organization
         SET name = #{name},
