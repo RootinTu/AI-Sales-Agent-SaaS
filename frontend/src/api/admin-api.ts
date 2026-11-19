@@ -119,6 +119,19 @@ export function updateTeamTokenBudget(totalTokens: number) {
   })
 }
 
+export function resetMemberPassword(memberId: string, newPassword: string) {
+  return requestJson<void>(`/api/v1/admin/members/${memberId}/password`, {
+    method: 'PUT',
+    data: { newPassword },
+  })
+}
+
+export function revokeMemberSessions(memberId: string) {
+  return requestJson<{ revokedSessions: number }>(`/api/v1/admin/members/${memberId}/revoke-sessions`, {
+    method: 'POST',
+  })
+}
+
 export function getTeam() {
   return getJson<AdminTeam>('/api/v1/admin/team')
 }

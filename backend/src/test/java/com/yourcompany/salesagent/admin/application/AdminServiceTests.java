@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import com.yourcompany.salesagent.admin.api.AdminMemberCreateRequest;
+import com.yourcompany.salesagent.admin.api.AdminMemberPasswordResetRequest;
 import com.yourcompany.salesagent.admin.api.AdminMemberUpdateRequest;
 import com.yourcompany.salesagent.admin.api.AdminTeamUpdateRequest;
 import com.yourcompany.salesagent.admin.api.TeamTokenBudgetRequest;
@@ -32,6 +33,8 @@ class AdminServiceTests {
 	private static final UUID OWNER_MEMBER_ID = UUID.fromString("20000000-0000-0000-0000-000000000001");
 	private static final UUID SALES_MEMBER_ID = UUID.fromString("20000000-0000-0000-0000-000000000002");
 	private static final UUID SALES_USER_ID = UUID.fromString("10000000-0000-0000-0000-000000000002");
+	private static final UUID OTHER_ADMIN_MEMBER_ID = UUID.fromString("20000000-0000-0000-0000-000000000003");
+	private static final UUID OTHER_ADMIN_USER_ID = UUID.fromString("10000000-0000-0000-0000-000000000003");
 	private static final Instant NOW = Instant.parse("2026-08-28T02:00:00Z");
 
 	@Test
@@ -78,6 +81,54 @@ class AdminServiceTests {
 
 		assertThat(result.status()).isEqualTo(MemberStatus.SUSPENDED);
 		verify(mapper).revokeMemberSessions(ORGANIZATION_ID, SALES_MEMBER_ID, NOW);
+	}
+
+	@Test
+	void ownerCanResetMemberPasswordAndRevokeSessions() {
+		var mapper = mock(AdminMapper.class);
+		when(mapper.selectMember(ORGANIZATION_ID, SALES_MEMBER_ID))
+				.thenReturn(member(SALES_MEMBER_ID, SALES_USER_ID, MemberRole.SALES, MemberStatus.ACTIVE));
+		when(mapper.updateMemberPassword(eq(ORGANIZATION_ID), eq(SALES_MEMBER_ID), any(), eq(NOW))).thenReturn(1);
+		var service = service(mapper);
+
+		service.resetMemberPassword(
+				principal("OWNER", OWNER_MEMBER_ID),
+				SALES_MEMBER_ID,
+				new AdminMemberPasswordResetRequest("NewSecurePass123"));
+
+		verify(mapper).updateMemberPassword(eq(ORGANIZATION_ID), eq(SALES_MEMBER_ID), any(), eq(NOW));
+		verify(mapper).revokeMemberSessions(ORGANIZATION_ID, SALES_MEMBER_ID, NOW);
+	}
+
+	@Test
+	void adminCannotResetAnotherAdminPassword() {
+		var mapper = mock(AdminMapper.class);
+		when(mapper.selectMember(ORGANIZATION_ID, OTHER_ADMIN_MEMBER_ID))
+				.thenReturn(member(OTHER_ADMIN_MEMBER_ID, OTHER_ADMIN_USER_ID, MemberRole.ADMIN, MemberStatus.ACTIVE));
+
+		assertThatThrownBy(() -> service(mapper).resetMemberPassword(
+				principal("ADMIN", SALES_MEMBER_ID),
+				OTHER_ADMIN_MEMBER_ID,
+				new AdminMemberPasswordResetRequest("NewSecurePass123")))
+				.isInstanceOf(AdminValidationException.class)
+				.hasMessage("管理员不能修改其他管理员，请由团队所有者操作");
+	}
+
+	@Test
+	void ownerCanRevokeMemberSessionsAndCannotRevokeSelf() {
+		var mapper = mock(AdminMapper.class);
+		when(mapper.selectMember(ORGANIZATION_ID, SALES_MEMBER_ID))
+				.thenReturn(member(SALES_MEMBER_ID, SALES_USER_ID, MemberRole.SALES, MemberStatus.ACTIVE));
+		when(mapper.revokeMemberSessions(ORGANIZATION_ID, SALES_MEMBER_ID, NOW)).thenReturn(2);
+
+		int revoked = service(mapper).revokeMemberSessions(principal("OWNER", OWNER_MEMBER_ID), SALES_MEMBER_ID);
+		assertThat(revoked).isEqualTo(2);
+
+		when(mapper.selectMember(ORGANIZATION_ID, SALES_MEMBER_ID))
+				.thenReturn(member(SALES_MEMBER_ID, SALES_USER_ID, MemberRole.ADMIN, MemberStatus.ACTIVE));
+		assertThatThrownBy(() -> service(mapper).revokeMemberSessions(principal("ADMIN", SALES_MEMBER_ID), SALES_MEMBER_ID))
+				.isInstanceOf(AdminValidationException.class)
+				.hasMessage("不能修改自己的角色或账号状态");
 	}
 
 	@Test

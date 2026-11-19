@@ -57,6 +57,12 @@ public interface AdminMapper {
 			@Param("memberId") UUID memberId,
 			@Param("now") Instant now);
 
+	int updateMemberPassword(
+			@Param("organizationId") UUID organizationId,
+			@Param("memberId") UUID memberId,
+			@Param("passwordHash") String passwordHash,
+			@Param("now") Instant now);
+
 	int updateTeam(
 			@Param("organizationId") UUID organizationId,
 			@Param("name") String name,

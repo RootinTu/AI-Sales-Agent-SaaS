@@ -133,7 +133,9 @@ describe('workspace separation topbar', () => {
     mount('/app/customers')
 
     expect(screen.getByRole('tab', { name: /全部业务/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('complementary', { name: '应用导航' })).toBeInTheDocument()
+    const sidebar = screen.getByRole('complementary', { name: '应用导航' })
+    expect(sidebar).toBeInTheDocument()
+    expect(within(sidebar).queryByAltText('AI Sales Agent SaaS')).not.toBeInTheDocument()
     expect(screen.getByText('客户管理内容')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '关闭窗口' })).not.toBeInTheDocument()
 

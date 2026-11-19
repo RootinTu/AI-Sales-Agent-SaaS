@@ -13,6 +13,7 @@ import org.springframework.util.StringUtils;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yourcompany.salesagent.admin.api.AdminMemberCreateRequest;
+import com.yourcompany.salesagent.admin.api.AdminMemberPasswordResetRequest;
 import com.yourcompany.salesagent.admin.api.AdminMemberResponse;
 import com.yourcompany.salesagent.admin.api.AdminMemberUpdateRequest;
 import com.yourcompany.salesagent.admin.api.AdminTeamResponse;
@@ -23,6 +24,7 @@ import com.yourcompany.salesagent.admin.api.TeamTokenBudgetResponse;
 import com.yourcompany.salesagent.admin.domain.MemberRole;
 import com.yourcompany.salesagent.admin.domain.MemberStatus;
 import com.yourcompany.salesagent.admin.infrastructure.AdminMapper;
+import com.yourcompany.salesagent.admin.infrastructure.AdminMemberRow;
 import com.yourcompany.salesagent.auth.security.AuthPrincipal;
 
 @Service
@@ -79,16 +81,7 @@ public class AdminService {
 			AuthPrincipal actor,
 			UUID memberId,
 			AdminMemberUpdateRequest request) {
-		var current = requireMember(actor.organizationId(), memberId);
-		if (current.role() == MemberRole.OWNER) {
-			throw new AdminValidationException("团队所有者不能在成员管理中修改");
-		}
-		if (memberId.equals(actor.memberId())) {
-			throw new AdminValidationException("不能修改自己的角色或账号状态");
-		}
-		if ("ADMIN".equals(actor.role()) && current.role() == MemberRole.ADMIN) {
-			throw new AdminValidationException("管理员不能修改其他管理员，请由团队所有者操作");
-		}
+		var current = requireManageableMember(actor, memberId);
 		validateAssignableRole(actor, request.role());
 		if (!ASSIGNABLE_STATUSES.contains(request.status())) {
 			throw new AdminValidationException("不支持设置该成员状态");
@@ -103,6 +96,26 @@ public class AdminService {
 			adminMapper.revokeMemberSessions(actor.organizationId(), memberId, now);
 		}
 		return AdminMemberResponse.from(requireMember(actor.organizationId(), memberId));
+	}
+
+	@Transactional
+	public void resetMemberPassword(
+			AuthPrincipal actor,
+			UUID memberId,
+			AdminMemberPasswordResetRequest request) {
+		requireManageableMember(actor, memberId);
+		var now = clock.instant();
+		var encoded = passwordEncoder.encode(request.newPassword());
+		if (adminMapper.updateMemberPassword(actor.organizationId(), memberId, encoded, now) == 0) {
+			throw new AdminValidationException("该成员账号未启用本地密码登录，无法重置密码");
+		}
+		adminMapper.revokeMemberSessions(actor.organizationId(), memberId, now);
+	}
+
+	@Transactional
+	public int revokeMemberSessions(AuthPrincipal actor, UUID memberId) {
+		requireManageableMember(actor, memberId);
+		return adminMapper.revokeMemberSessions(actor.organizationId(), memberId, clock.instant());
 	}
 
 	@Transactional
@@ -192,6 +205,20 @@ public class AdminService {
 		return getTeam(actor);
 	}
 
+	private AdminMemberRow requireManageableMember(AuthPrincipal actor, UUID memberId) {
+		var current = requireMember(actor.organizationId(), memberId);
+		if (current.role() == MemberRole.OWNER) {
+			throw new AdminValidationException("团队所有者不能在成员管理中修改");
+		}
+		if (memberId.equals(actor.memberId())) {
+			throw new AdminValidationException("不能修改自己的角色或账号状态");
+		}
+		if ("ADMIN".equals(actor.role()) && current.role() == MemberRole.ADMIN) {
+			throw new AdminValidationException("管理员不能修改其他管理员，请由团队所有者操作");
+		}
+		return current;
+	}
+
 	private void validateAssignableRole(AuthPrincipal actor, MemberRole role) {
 		if (!ASSIGNABLE_ROLES.contains(role)) {
 			throw new AdminValidationException("团队所有者角色不能通过成员管理分配");
@@ -201,9 +228,7 @@ public class AdminService {
 		}
 	}
 
-	private com.yourcompany.salesagent.admin.infrastructure.AdminMemberRow requireMember(
-			UUID organizationId,
-			UUID memberId) {
+	private AdminMemberRow requireMember(UUID organizationId, UUID memberId) {
 		var member = adminMapper.selectMember(organizationId, memberId);
 		if (member == null) {
 			throw new AdminResourceNotFoundException("成员不存在或已被移出当前团队");

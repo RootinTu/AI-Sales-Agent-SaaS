@@ -1,4 +1,4 @@
-import { ClockCounterClockwise, MagnifyingGlass, ShieldCheck, WarningCircle } from '@phosphor-icons/react'
+import { ClockCounterClockwise, DownloadSimple, MagnifyingGlass, ShieldCheck, WarningCircle } from '@phosphor-icons/react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { getAuditEvents, type AuditEvent } from '../api/audit-logs-api'
@@ -82,7 +82,21 @@ export function AuditLogsPage() {
       <DemoPageHeader
         title="日志管理"
         description="追踪成员在系统中的新增、修改、导入、审批和配置操作。"
-        actions={<button className="button button-secondary" type="button" onClick={() => void query.refetch()}><ClockCounterClockwise size={16} />刷新</button>}
+        actions={(
+          <div className="audit-header-actions">
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={!data?.content.length}
+              onClick={() => exportAuditCsv(data?.content ?? [])}
+            >
+              <DownloadSimple size={16} />导出 CSV
+            </button>
+            <button className="button button-secondary" type="button" onClick={() => void query.refetch()}>
+              <ClockCounterClockwise size={16} />刷新
+            </button>
+          </div>
+        )}
       />
 
       <section className="surface audit-panel">
@@ -100,6 +114,13 @@ export function AuditLogsPage() {
           <SelectField value={action} onChange={(value) => resetPage(() => setAction(value))} ariaLabel="动作类型" options={actionOptions} />
           <SelectField value={targetType} onChange={(value) => resetPage(() => setTargetType(value))} ariaLabel="资源类型" options={targetOptions} />
           <SelectField value={result} onChange={(value) => resetPage(() => setResult(value))} ariaLabel="执行结果" options={resultOptions} />
+          <button
+            type="button"
+            className={`button button-secondary audit-quick-filter${result === 'FAILED' ? ' is-active' : ''}`}
+            onClick={() => resetPage(() => setResult(result === 'FAILED' ? '' : 'FAILED'))}
+          >
+            <WarningCircle size={15} />仅看失败
+          </button>
         </div>
 
         <div className="audit-table-wrap">
@@ -250,4 +271,38 @@ function formatDateTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function escapeCsvCell(value: string) {
+  const safe = value.replaceAll('"', '""')
+  return /[",\r\n]/.test(safe) ? `"${safe}"` : safe
+}
+
+function exportAuditCsv(events: AuditEvent[]) {
+  if (!events.length) return
+  const header = ['时间', '操作', '资源', '操作人', '结果', '状态码', '耗时(ms)', '来源IP', '请求ID']
+  const rows = events.map((event) => {
+    const resource = resourceLabel(event)
+    const status = typeof event.metadata.status === 'number' ? String(event.metadata.status) : ''
+    const duration = typeof event.metadata.durationMs === 'number' ? String(event.metadata.durationMs) : ''
+    return [
+      event.occurredAt,
+      actionLabel(event),
+      `${resource.label}${resource.detail ? ` (${resource.detail})` : ''}`,
+      event.actorIdentifier ?? '未知用户',
+      resultLabels[event.result],
+      status,
+      duration,
+      event.ipAddress ?? '',
+      event.requestId ?? '',
+    ].map(escapeCsvCell).join(',')
+  })
+  const csv = `\uFEFF${header.join(',')}\r\n${rows.join('\r\n')}`
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
 }
