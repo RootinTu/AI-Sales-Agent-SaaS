@@ -23,9 +23,19 @@ public interface KnowledgeMapper {
 	int deleteChunks(@Param("org") UUID org, @Param("id") UUID id);
 	int insertChunk(@Param("org") UUID org, @Param("id") UUID id, @Param("document") UUID document,
 			@Param("revision") long revision, @Param("index") int index, @Param("pageNumber") Integer pageNumber,
-			@Param("content") String content, @Param("terms") String terms);
+			@Param("content") String content, @Param("terms") String terms,
+			@Param("embedding") String embedding, @Param("embeddingModel") String embeddingModel);
+	default int insertChunk(UUID org, UUID id, UUID document, long revision, int index, Integer pageNumber,
+			String content, String terms) {
+		return insertChunk(org, id, document, revision, index, pageNumber, content, terms, null, null);
+	}
 	IPage<KnowledgeChunkResponse> selectChunks(Page<KnowledgeChunkResponse> page, @Param("org") UUID org, @Param("member") UUID member, @Param("id") UUID id);
 	List<KnowledgeChunkResponse> selectCandidates(@Param("org") UUID org, @Param("member") UUID member,
 			@Param("searchQuery") String searchQuery, @Param("document") UUID document);
+	List<KnowledgeVectorCandidateRow> selectVectorCandidates(@Param("org") UUID org, @Param("member") UUID member,
+			@Param("queryEmbedding") String queryEmbedding, @Param("embeddingModel") String embeddingModel,
+			@Param("document") UUID document);
+	List<KnowledgeDocumentRow> selectDocumentsNeedingEmbedding(@Param("org") UUID org, @Param("member") UUID member,
+			@Param("embeddingModel") String embeddingModel, @Param("limit") int limit);
 	int sourceAvailable(@Param("org") UUID org, @Param("member") UUID member, @Param("id") UUID id, @Param("revision") long revision);
 }

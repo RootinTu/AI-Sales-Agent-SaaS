@@ -5,7 +5,10 @@
     <sql id="Access">d.organization_id = #{org} AND d.status &lt;&gt; 'DELETED' AND (d.visibility = 'TEAM' OR d.uploaded_by_member_id = #{member})</sql>
     <sql id="DocumentSelect">
         SELECT d.id, d.uploaded_by_member_id, d.file_id, d.title, d.category, d.visibility, d.status, d.enabled,
-            d.chunk_count, d.character_count, d.error_message, d.revision, d.version,
+            d.chunk_count,
+            COALESCE((SELECT COUNT(*) FROM knowledge_chunk c WHERE c.organization_id = d.organization_id AND c.document_id = d.id AND c.revision = d.revision AND c.embedding IS NOT NULL), 0) AS embedded_chunk_count,
+            (SELECT c.embedding_model FROM knowledge_chunk c WHERE c.organization_id = d.organization_id AND c.document_id = d.id AND c.revision = d.revision AND c.embedding IS NOT NULL LIMIT 1) AS embedding_model,
+            d.character_count, d.error_message, d.revision, d.version,
             f.original_filename AS filename, f.size_bytes, u.display_name AS uploaded_by_name, d.created_at, d.updated_at
         FROM knowledge_document d
         JOIN uploaded_file f ON f.organization_id = d.organization_id AND f.id = d.file_id
@@ -50,8 +53,8 @@
     </update>
     <delete id="deleteChunks">DELETE FROM knowledge_chunk WHERE organization_id = #{org} AND document_id = #{id}</delete>
     <insert id="insertChunk">
-        INSERT INTO knowledge_chunk (id, organization_id, document_id, revision, chunk_index, page_number, content, search_terms)
-        VALUES (#{id}, #{org}, #{document}, #{revision}, #{index}, #{pageNumber}, #{content}, #{terms})
+        INSERT INTO knowledge_chunk (id, organization_id, document_id, revision, chunk_index, page_number, content, search_terms, embedding, embedding_model)
+        VALUES (#{id}, #{org}, #{document}, #{revision}, #{index}, #{pageNumber}, #{content}, #{terms}, CAST(#{embedding} AS vector), #{embeddingModel})
     </insert>
     <sql id="ChunkSelect">
         SELECT c.id, c.document_id, c.chunk_index, c.page_number, d.title, c.content, c.revision
@@ -65,7 +68,28 @@
         <include refid="ChunkSelect" /> AND d.enabled = true AND d.status = 'READY'
         <if test="document != null">AND d.id = #{document}</if>
         AND c.search_vector @@ to_tsquery('simple', #{searchQuery})
-        ORDER BY ts_rank_cd(c.search_vector, to_tsquery('simple', #{searchQuery})) DESC, c.id LIMIT 60
+        ORDER BY ts_rank_cd(c.search_vector, to_tsquery('simple', #{searchQuery})) DESC, c.id LIMIT 30
+    </select>
+    <select id="selectVectorCandidates" resultType="com.yourcompany.salesagent.knowledge.infrastructure.KnowledgeVectorCandidateRow">
+        SELECT c.id, c.document_id, c.chunk_index, c.page_number, d.title, c.content, c.revision,
+            (1 - (c.embedding &lt;=&gt; CAST(#{queryEmbedding} AS vector))) AS vector_score
+        FROM knowledge_chunk c JOIN knowledge_document d ON d.organization_id = c.organization_id AND d.id = c.document_id
+        WHERE <include refid="Access" /> AND c.revision = d.revision AND d.enabled = true AND d.status = 'READY'
+            AND c.embedding IS NOT NULL
+            <if test="embeddingModel != null and embeddingModel != ''">AND (c.embedding_model = #{embeddingModel} OR c.embedding_model IS NULL)</if>
+            <if test="document != null">AND d.id = #{document}</if>
+        ORDER BY c.embedding &lt;=&gt; CAST(#{queryEmbedding} AS vector) ASC, c.id LIMIT 30
+    </select>
+    <select id="selectDocumentsNeedingEmbedding" resultMap="DocumentMap">
+        <include refid="DocumentSelect" />
+        AND d.status = 'READY' AND d.enabled = true AND d.chunk_count &gt; 0
+        AND EXISTS (
+            SELECT 1 FROM knowledge_chunk c
+            WHERE c.organization_id = d.organization_id AND c.document_id = d.id AND c.revision = d.revision
+              AND (c.embedding IS NULL
+                  <if test="embeddingModel != null and embeddingModel != ''">OR c.embedding_model IS DISTINCT FROM #{embeddingModel}</if>)
+        )
+        ORDER BY d.updated_at DESC, d.id LIMIT #{limit}
     </select>
     <select id="sourceAvailable" resultType="int">
         SELECT COUNT(*) FROM knowledge_chunk c JOIN knowledge_document d ON d.organization_id = c.organization_id AND d.id = c.document_id

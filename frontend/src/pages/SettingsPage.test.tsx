@@ -18,13 +18,13 @@ describe('SettingsPage', () => {
       const url = fetchRequestUrl(input)
       const method = fetchRequestMethod(input, init)
       if (url.endsWith('/api/v1/ai/model') && method === 'PUT') {
-        return new Response(JSON.stringify({ provider: 'QWEN', model: 'qwen3.7-plus', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyConfigured: true, ready: true, status: 'READY' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        return new Response(JSON.stringify({ provider: 'QWEN', model: 'qwen3.7-plus', embeddingModel: 'qwen3.7-text-embedding-flash', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyConfigured: true, ready: true, status: 'READY' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.endsWith('/api/v1/ai/model/test') && method === 'POST') {
         return new Response(JSON.stringify({ provider: 'QWEN', model: 'qwen3.7-plus', status: 'CONNECTED', responsePreview: '连接成功', latencyMs: 328 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.endsWith('/api/v1/ai/model')) {
-        return new Response(JSON.stringify({ provider: 'QWEN', model: 'qwen-plus', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyConfigured: false, ready: false, status: 'MISSING_API_KEY' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        return new Response(JSON.stringify({ provider: 'QWEN', model: 'qwen-plus', embeddingModel: 'qwen3.7-text-embedding-flash', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyConfigured: false, ready: false, status: 'MISSING_API_KEY' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.endsWith('/api/v1/email/settings')) {
         return new Response(JSON.stringify({ host: null, port: null, username: null, fromAddress: null, smtpAuth: true, starttlsEnabled: true, starttlsRequired: false, passwordConfigured: false, ready: false, status: 'MISSING_CONFIGURATION' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -61,6 +61,7 @@ describe('SettingsPage', () => {
     expect(await fetchRequestJson(saveCall![0], saveCall![1])).toEqual({
       provider: 'QWEN',
       model: 'qwen3.7-plus',
+      embeddingModel: 'qwen3.7-text-embedding-flash',
       baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       apiKey: 'sk-manual-test',
     })

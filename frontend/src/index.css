@@ -1052,6 +1052,10 @@ input:focus-visible {
 .knowledge-status.is-processing { color: #1d5eba; background: #edf4ff; }
 .knowledge-status.is-failed { color: #b42318; background: #fff0ee; }
 .knowledge-status.is-disabled { color: #64748b; background: #f0f2f5; }
+.knowledge-index-cell { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.knowledge-vector-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; line-height: 1.4; white-space: nowrap; }
+.knowledge-vector-badge.is-vector { color: #0f5f9c; background: #e8f3ff; }
+.knowledge-vector-badge.is-lexical { color: #9a5b13; background: #fff6e6; }
 .knowledge-ask { max-width: 1020px; }
 .knowledge-question { display: grid; gap: 12px; padding: 20px 0; border-bottom: 1px solid var(--border); }
 .knowledge-question > label { font-size: 14px; font-weight: 600; }

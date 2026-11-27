@@ -12,11 +12,12 @@ vi.mock('../api/knowledge-api', async (original) => ({
   ...await original<typeof import('../api/knowledge-api')>(),
   getKnowledgeDocuments: vi.fn(), getKnowledgeDocument: vi.fn(), getKnowledgeChunks: vi.fn(), getKnowledgeDocumentText: vi.fn(),
   uploadKnowledgeDocument: vi.fn(), createKnowledgeText: vi.fn(), askKnowledge: vi.fn(),
-  setKnowledgeState: vi.fn(), deleteKnowledgeDocument: vi.fn(),
+  setKnowledgeState: vi.fn(), deleteKnowledgeDocument: vi.fn(), backfillKnowledgeEmbeddings: vi.fn(),
 }))
 const doc: api.KnowledgeDocument = {
   id: 'document-1', title: '报价审批流程', category: 'POLICY', visibility: 'TEAM', status: 'READY', enabled: true,
-  chunkCount: 1, characterCount: 20, errorMessage: null, revision: 1, version: 2,
+  chunkCount: 1, embeddedChunkCount: 1, embeddingModel: 'qwen3.7-text-embedding-flash',
+  characterCount: 20, errorMessage: null, revision: 1, version: 2,
   filename: '报价审批流程.txt', sizeBytes: 60, uploadedByName: '销售甲', createdAt: '2026-11-09T00:00:00Z', updatedAt: '2026-11-09T00:00:00Z', canManage: true,
 }
 function page<T>(content: T[]): api.KnowledgePage<T> { return { content, page: 0, size: 20, totalElements: content.length, totalPages: content.length ? 1 : 0, first: true, last: true } }
@@ -154,5 +155,15 @@ describe('KnowledgePage', () => {
     expect(api.getKnowledgeDocument).not.toHaveBeenCalled()
     expect(api.getKnowledgeDocumentText).not.toHaveBeenCalled()
     expect(api.getKnowledgeChunks).not.toHaveBeenCalled()
+  })
+  it('allows admins to backfill missing vector embeddings for legacy documents', async () => {
+    const legacyDoc: api.KnowledgeDocument = { ...doc, embeddedChunkCount: 0, embeddingModel: null }
+    vi.mocked(api.getKnowledgeDocuments).mockResolvedValue(page([legacyDoc]))
+    vi.mocked(api.backfillKnowledgeEmbeddings).mockResolvedValue({ processed: 1, succeeded: 1, failed: 0, remaining: 0, embeddingModel: 'qwen3.7-text-embedding-flash' })
+    const user = userEvent.setup(); mount()
+    expect(await screen.findByText('仅全文')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '补齐向量索引' }))
+    expect(api.backfillKnowledgeEmbeddings).toHaveBeenCalledTimes(1)
+    expect(await screen.findByRole('status')).toHaveTextContent('向量补齐完成：成功 1 份')
   })
 })

@@ -26,21 +26,40 @@ def _terms(value: str) -> set[str]:
     return set(search_terms(value))
 
 
+MIN_VECTOR_SCORE = 0.25
+RRF_K = 60.0
+
+
 def rank_candidates(query: str, candidates: list[KnowledgeCandidate], top_k: int) -> list[KnowledgeSource]:
     query_terms = _terms(query)
+    has_vector = any(candidate.vector_score is not None for candidate in candidates)
     ranked: list[KnowledgeSource] = []
     for candidate in candidates:
         candidate_terms = _terms(candidate.title + candidate.content)
         overlap = len(query_terms & candidate_terms)
-        score = overlap / math.sqrt(max(1, len(query_terms)) * max(1, len(candidate_terms)))
-        if score > 0:
-            ranked.append(KnowledgeSource(
-                id=candidate.id,
-                title=candidate.title,
-                excerpt=candidate.content[:1200],
-                score=round(score, 6),
-                metadata=candidate.metadata,
-            ))
+        lexical_score = overlap / math.sqrt(max(1, len(query_terms)) * max(1, len(candidate_terms)))
+        if has_vector:
+            vector_score = max(0.0, float(candidate.vector_score)) if candidate.vector_score is not None else 0.0
+            if lexical_score <= 0 and vector_score < MIN_VECTOR_SCORE:
+                continue
+            rrf_bonus = 0.0
+            if candidate.vector_rank is not None:
+                rrf_bonus += 1.0 / (RRF_K + candidate.vector_rank)
+            if candidate.lexical_rank is not None:
+                rrf_bonus += 1.0 / (RRF_K + candidate.lexical_rank)
+            # 融合向量余弦相似度、词项重合度与双路 RRF 增益（归一化至约 0~1）
+            score = 0.62 * vector_score + 0.23 * lexical_score + 0.15 * min(1.0, rrf_bonus * (RRF_K / 2.0))
+        else:
+            score = lexical_score
+            if score <= 0:
+                continue
+        ranked.append(KnowledgeSource(
+            id=candidate.id,
+            title=candidate.title,
+            excerpt=candidate.content[:1200],
+            score=round(score, 6),
+            metadata=candidate.metadata,
+        ))
     return sorted(ranked, key=lambda item: item.score, reverse=True)[:top_k]
 
 

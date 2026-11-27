@@ -46,6 +46,7 @@ class AiModelServiceTests {
 		var status = service.status(organizationId);
 
 		assertThat(status.provider()).isEqualTo("QWEN");
+		assertThat(status.embeddingModel()).isEqualTo("qwen3.7-text-embedding-flash");
 		assertThat(status.apiKeyConfigured()).isFalse();
 		assertThat(status.ready()).isFalse();
 		assertThatThrownBy(() -> service.testConnection(organizationId)).isInstanceOf(AiModelNotConfiguredException.class);
@@ -99,11 +100,13 @@ class AiModelServiceTests {
 		service.update(organizationId, new AiModelUpdateRequest(
 				"QWEN",
 				"qwen3.7-plus",
+				"qwen3.7-text-embedding-flash",
 				"https://dashscope.aliyuncs.com/compatible-mode/v1",
 				"sk-manual"));
 
 		verify(cipher).encrypt(organizationId, "sk-manual");
-		verify(mapper).insert(any(AiModelConfiguration.class));
+		verify(mapper).insert(org.mockito.ArgumentMatchers.argThat((AiModelConfiguration saved) ->
+				"qwen3.7-text-embedding-flash".equals(saved.getEmbeddingModel())));
 	}
 
 	@Test

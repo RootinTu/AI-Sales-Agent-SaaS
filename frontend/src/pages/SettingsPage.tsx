@@ -17,6 +17,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
   const queryClient = useQueryClient()
   const [provider, setProvider] = useState<string>(status?.provider ?? 'QWEN')
   const [model, setModel] = useState(status?.model ?? 'qwen-plus')
+  const [embeddingModel, setEmbeddingModel] = useState(status?.embeddingModel ?? 'qwen3.7-text-embedding-flash')
   const [baseUrl, setBaseUrl] = useState(status?.baseUrl ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1')
   const [apiKey, setApiKey] = useState('')
   const modelTest = useMutation({ mutationFn: testAiModelConnection })
@@ -24,6 +25,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
     mutationFn: saveAiModelConfiguration,
     onSuccess: (savedStatus) => {
       queryClient.setQueryData(['ai-model-status'], savedStatus)
+      if (savedStatus.embeddingModel) setEmbeddingModel(savedStatus.embeddingModel)
       setApiKey('')
       modelTest.reset()
     },
@@ -34,6 +36,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
     modelSave.mutate({
       provider: 'QWEN',
       model: model.trim(),
+      embeddingModel: embeddingModel.trim() || undefined,
       baseUrl: baseUrl.trim(),
       apiKey: apiKey.trim() || undefined,
     })
@@ -43,6 +46,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
     <form className="settings-form" onSubmit={saveModel}>
       <div className="settings-field"><span>模型提供商</span><SelectField value={provider} onChange={setProvider} ariaLabel="模型提供商" disabled={isGuest || modelSave.isPending} options={[{ value: 'QWEN', label: '通义千问（百炼）' }]} /><small>初版固定使用千问，后续通过模型适配层扩展。</small></div>
       <label><span>模型名称</span><input aria-label="模型名称" type="text" required maxLength={120} value={model} disabled={isGuest || modelSave.isPending} onChange={(event) => setModel(event.target.value)} placeholder="例如：qwen3.7-plus" /><small>保存后立即用于新的模型调用，无需重启服务。</small></label>
+      <label><span>向量模型（Embedding）</span><input aria-label="向量模型" type="text" maxLength={120} value={embeddingModel} disabled={isGuest || modelSave.isPending} onChange={(event) => setEmbeddingModel(event.target.value)} placeholder="默认：qwen3.7-text-embedding-flash" /><small>用于企业知识库语义检索，复用上方 API Key 与地址；留空使用系统默认（1024 维）。</small></label>
       <label><span>API Key</span><input aria-label="API Key" type="password" maxLength={500} autoComplete="new-password" value={apiKey} disabled={isGuest || modelSave.isPending} onChange={(event) => setApiKey(event.target.value)} placeholder={status?.apiKeyConfigured ? '已加密保存，留空表示不修改' : '请输入百炼 API Key'} /><small>{status?.apiKeyConfigured ? '密钥已加密保存，页面不会读取或回显原文。' : '首次保存必须输入 Key，数据库只保存 AES-GCM 密文。'}</small></label>
       <label><span>API 地址</span><input aria-label="API 地址" type="url" required maxLength={500} value={baseUrl} disabled={isGuest || modelSave.isPending} onChange={(event) => setBaseUrl(event.target.value)} /><small>仅接受 HTTPS 地址，默认使用百炼中国大陆兼容端点。</small></label>
       <div className="settings-form-actions">

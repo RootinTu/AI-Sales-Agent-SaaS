@@ -4,7 +4,7 @@
 
 企业知识库采用检索增强生成（RAG），不训练或微调模型。用户上传资料后，系统解析原文、切分片段并建立检索索引；提问时先筛选当前用户有权访问的资料，再把相关片段交给千问回答。回答展示来源、页码（PDF）、片段版本及原文。
 
-第一版是 **PostgreSQL 全文检索 RAG**，不是向量检索。中文按相邻双字切分，英文使用词项；PostgreSQL GIN 索引召回最多 60 个片段，Python 按词项重合度排序，最多将 5 个片段交给模型。没有使用 Embedding、向量数据库或语义重排模型。同义表达、跨语言和抽象问题可能召回不足，后续可增加向量与全文混合检索。
+第二版已升级为 **PostgreSQL `pgvector` 语义向量 + `tsvector` 全文混合检索（Hybrid RAG）**，默认适配阿里云百炼 `qwen3.7-text-embedding-flash`（1024 维，单批 20 条并发向量化）。提问时同步走 `pgvector` HNSW 余弦相似度召回（Top 30）与 GIN 全文召回（Top 30），在 Python 端通过向量相似度 + 词项重合度 + RRF 双路融合重排后取 Top 5 片段交给模型回答。若租户尚未配置 API Key 或向量接口临时不可用，系统自动降级为全文检索，不影响正常上传与问答。
 
 ## 职责边界
 
@@ -59,9 +59,10 @@
 
 需要同时发布 frontend、backend 和 ai-service；不能只更新前端。
 
-- Java 启动时 Flyway 自动执行 `V16__enterprise_knowledge.sql`。
-- Python 新增 `langchain-text-splitters`、`pypdf`、`python-docx` 依赖，需重建离线 wheelhouse 或更新宝塔现有虚拟环境，**不要删除或覆盖虚拟环境**。
-- 沿用 `AI_SERVICE_BASE_URL` / `AI_SERVICE_TOKEN`，无需新增 Embedding Key 或向量数据库。
+- Java 启动时 Flyway 自动执行 `V16__enterprise_knowledge.sql` 与 `V21__knowledge_pgvector.sql`（**需提前在 PostgreSQL 安装 `pgvector` 扩展**）。
+- Python 复用现有 `langchain-openai` / `openai` 依赖调用 `/embeddings`，**无需新增第三方依赖**；不要删除或覆盖宝塔现有虚拟环境。
+- 沿用 `AI_SERVICE_BASE_URL` / `AI_SERVICE_TOKEN` 与「设置 → AI 模型」中的千问 `API Key` / `Base URL`，向量模型默认为 `qwen3.7-text-embedding-flash`（1024 维），可在「设置 → AI 模型」按需覆写。
+- 管理员可在「企业知识库 → 资料库」点击「补齐向量索引」（`POST /api/v1/knowledge/documents/backfill-embeddings`）一键为历史存量资料补齐向量。
 - 反向代理需允许 12MB 请求体（multipart 有额外开销），并为入库/问答保留足够超时；前端这些请求超时为 180 秒，Java → Python 默认 120 秒。
 
 服务器已有离线发布包时，在实际 ai-service 目录运行：

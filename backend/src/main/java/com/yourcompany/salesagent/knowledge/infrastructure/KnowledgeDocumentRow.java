@@ -13,6 +13,8 @@ public class KnowledgeDocumentRow {
 	private String status;
 	private boolean enabled;
 	private int chunkCount;
+	private int embeddedChunkCount;
+	private String embeddingModel;
 	private int characterCount;
 	private String errorMessage;
 	private long revision;
@@ -40,6 +42,10 @@ public class KnowledgeDocumentRow {
 	public void setEnabled(boolean v) { enabled = v; }
 	public int getChunkCount() { return chunkCount; }
 	public void setChunkCount(int v) { chunkCount = v; }
+	public int getEmbeddedChunkCount() { return embeddedChunkCount; }
+	public void setEmbeddedChunkCount(int v) { embeddedChunkCount = v; }
+	public String getEmbeddingModel() { return embeddingModel; }
+	public void setEmbeddingModel(String v) { embeddingModel = v; }
 	public int getCharacterCount() { return characterCount; }
 	public void setCharacterCount(int v) { characterCount = v; }
 	public String getErrorMessage() { return errorMessage; }
