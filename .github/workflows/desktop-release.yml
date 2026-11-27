@@ -14,7 +14,7 @@ on:
       release_tag:
         description: "GitHub Release tag，例如 desktop-v0.1.5"
         required: true
-        default: "desktop-v1.5.3"
+        default: "desktop-v1.5.4"
       prerelease:
         description: "是否发布为预发布版本"
         required: true
@@ -81,13 +81,14 @@ jobs:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: AI Sales Agent Desktop ${{ inputs.release_tag || github.ref_name }}
           releaseBody: |
-            AI Sales Agent 1.5.3。
+            AI Sales Agent 1.5.4。
 
-            - 企业知识库升级为 PostgreSQL pgvector + 全文混合语义检索（Hybrid RAG），默认适配千问 qwen3.7-text-embedding-flash（1024 维，单批 20 条并发向量化）。
-            - 双路召回融合重排：结合向量余弦相似度、词项重合度与 RRF 排名，显著提升同义词与口语化提问召回率；支持无模型/异常自动降级全文检索。
-            - 模型设置与存量迁移：「设置 → AI 模型」支持选填向量模型；知识库展示「向量索引 / 仅全文」状态，管理员可一键「补齐向量索引」。
+            - 助手结果输出默认支持 Markdown 排版渲染，全面优化对话 UI，移除多余嵌套背景与双层边框。
+            - 新增分场景动态思考链：知识问答、业务工作流与自主 Agent 按不同用法实时展示对应思考进度。
+            - 严格收紧 MCP 助手能力边界：聚焦简单问答与标准工作流，自主 Agent 能力统一收口至顶部「自主 Agent」独立空间。
+            - 优化 pgvector 知识库语义召回降噪，过滤弱相关无关文档引用；同步桌面端自动更新地址至 RootinTu/AI-Sales-Agent-SaaS。
 
-            完整发布说明见仓库 docs/releases/1.5.3.md。
+            完整发布说明见仓库 docs/releases/1.5.4.md。
 
             - Windows 安装包由 Tauri / NSIS 生成。
             - latest.json 用于桌面端自动更新。
