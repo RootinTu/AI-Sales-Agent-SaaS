@@ -20,6 +20,9 @@ public class AiModelConfiguration {
 	@TableField("model_name")
 	private String modelName;
 
+	@TableField("embedding_model")
+	private String embeddingModel;
+
 	@TableField("base_url")
 	private String baseUrl;
 
@@ -47,10 +50,21 @@ public class AiModelConfiguration {
 			String baseUrl,
 			String encryptedApiKey,
 			Instant now) {
+		return create(organizationId, modelName, null, baseUrl, encryptedApiKey, now);
+	}
+
+	public static AiModelConfiguration create(
+			UUID organizationId,
+			String modelName,
+			String embeddingModel,
+			String baseUrl,
+			String encryptedApiKey,
+			Instant now) {
 		var configuration = new AiModelConfiguration();
 		configuration.organizationId = organizationId;
 		configuration.provider = "QWEN";
 		configuration.modelName = modelName;
+		configuration.embeddingModel = embeddingModel;
 		configuration.baseUrl = baseUrl;
 		configuration.encryptedApiKey = encryptedApiKey;
 		configuration.encryptionVersion = 1;
@@ -60,7 +74,12 @@ public class AiModelConfiguration {
 	}
 
 	public void update(String modelName, String baseUrl, String encryptedApiKey, Instant now) {
+		update(modelName, this.embeddingModel, baseUrl, encryptedApiKey, now);
+	}
+
+	public void update(String modelName, String embeddingModel, String baseUrl, String encryptedApiKey, Instant now) {
 		this.modelName = modelName;
+		this.embeddingModel = embeddingModel;
 		this.baseUrl = baseUrl;
 		this.encryptedApiKey = encryptedApiKey;
 		this.updatedAt = now;
@@ -69,6 +88,7 @@ public class AiModelConfiguration {
 	public UUID getOrganizationId() { return organizationId; }
 	public String getProvider() { return provider; }
 	public String getModelName() { return modelName; }
+	public String getEmbeddingModel() { return embeddingModel; }
 	public String getBaseUrl() { return baseUrl; }
 	public String getEncryptedApiKey() { return encryptedApiKey; }
 	public int getEncryptionVersion() { return encryptionVersion; }

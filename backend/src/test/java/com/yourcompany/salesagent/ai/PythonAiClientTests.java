@@ -27,8 +27,8 @@ class PythonAiClientTests {
 			var path = exchange.getRequestURI().getPath();
 			bodies.put(path, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
 			var response = path.endsWith("ingest")
-					? "{\"chunks\":[{\"chunk_index\":0,\"page_number\":2,\"content\":\"审批原文\",\"search_terms\":\"审批\"}],\"character_count\":4}"
-					: path.endsWith("terms") ? "{\"search_query\":\"报价 | 审批\"}"
+					? "{\"chunks\":[{\"chunk_index\":0,\"page_number\":2,\"content\":\"审批原文\",\"search_terms\":\"审批\",\"embedding\":[0.1,0.2]}],\"character_count\":4,\"embedding_model\":\"qwen3.7-text-embedding-flash\",\"embedding_usage\":{\"input_tokens\":5,\"output_tokens\":0,\"total_tokens\":5}}"
+					: path.endsWith("terms") ? "{\"search_query\":\"报价 | 审批\",\"query_embedding\":[0.1,0.2],\"embedding_model\":\"qwen3.7-text-embedding-flash\",\"embedding_usage\":{\"input_tokens\":3,\"output_tokens\":0,\"total_tokens\":3}}"
 					: "{\"content\":\"需要审批。[资料 1]\",\"sources\":[{\"id\":\"chunk-1\",\"title\":\"报价流程\",\"excerpt\":\"审批原文\",\"score\":0.8,\"metadata\":{}}],\"model\":\"test\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10,\"total_tokens\":30}}";
 			var bytes = response.getBytes(StandardCharsets.UTF_8);
 			exchange.getResponseHeaders().set("Content-Type", "application/json");
@@ -39,8 +39,16 @@ class PythonAiClientTests {
 			var client = new PythonAiClient(new PythonAiProperties("http://127.0.0.1:" + server.getAddress().getPort(), "knowledge-test", Duration.ofSeconds(2), Duration.ofSeconds(5)));
 			assertThat(client.ingestDocument("流程.txt", "报价流程", "POLICY", "原文".getBytes(StandardCharsets.UTF_8)).chunks().get(0).pageNumber()).isEqualTo(2);
 			assertThat(bodies.get("/v1/knowledge/ingest")).contains("content_base64").doesNotContain("api_key");
+			var cfg = new AiModelRuntimeConfiguration("QWEN", "test", "qwen3.7-text-embedding-flash", "https://example.invalid/v1", "key");
+			var embeddedDoc = client.ingestDocument("流程.txt", "报价流程", "POLICY", "原文".getBytes(StandardCharsets.UTF_8), cfg, 1024);
+			assertThat(embeddedDoc.embeddingModel()).isEqualTo("qwen3.7-text-embedding-flash");
+			assertThat(embeddedDoc.chunks().get(0).embedding()).containsExactly(0.1, 0.2);
+			assertThat(bodies.get("/v1/knowledge/ingest")).contains("\"model\":\"qwen3.7-text-embedding-flash\"").contains("\"dimensions\":1024");
 			assertThat(client.knowledgeSearchQuery("报价审批")).isEqualTo("报价 | 审批");
-			var result = client.answerKnowledge(new AiModelRuntimeConfiguration("QWEN", "test", "https://example.invalid/v1", "key"), "报价审批", List.of(Map.of("id", "chunk-1", "title", "报价流程", "content", "审批原文")));
+			var prepared = client.prepareKnowledgeSearch("报价审批", cfg, 1024);
+			assertThat(prepared.queryEmbedding()).containsExactly(0.1, 0.2);
+			assertThat(prepared.embeddingUsage().totalTokens()).isEqualTo(3);
+			var result = client.answerKnowledge(cfg, "报价审批", List.of(Map.of("id", "chunk-1", "title", "报价流程", "content", "审批原文")));
 			assertThat(result.sources().get(0).id()).isEqualTo("chunk-1");
 			assertThat(result.usage().toModelUsage().totalTokens()).isEqualTo(30);
 			assertThat(bodies.get("/v1/knowledge/query")).contains("\"api_key\":\"key\"").contains("\"query\":\"报价审批\"");

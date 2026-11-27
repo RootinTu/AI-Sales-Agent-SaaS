@@ -102,3 +102,124 @@ def test_no_match_does_not_call_model(monkeypatch):
     result = asyncio.run(answer_from_knowledge(KnowledgeQueryRequest(api_key="test", base_url="https://example.invalid/v1", model="test", query="报价", candidates=[])))
     assert result.sources == []
     assert result.usage is None
+
+
+def test_resolve_batch_size_and_embed_batches_for_qwen37_flash(monkeypatch):
+    from types import SimpleNamespace
+    from app.features.knowledge.embeddings import embed_texts, resolve_batch_size
+    from app.features.knowledge.schemas import EmbeddingConfiguration
+
+    qwen37 = EmbeddingConfiguration(
+        api_key="sk-test",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="qwen3.7-text-embedding-flash",
+        dimensions=64,
+    )
+    qwen_v3 = EmbeddingConfiguration(
+        api_key="sk-test",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="text-embedding-v3",
+        dimensions=64,
+    )
+    assert resolve_batch_size(qwen37) == 20
+    assert resolve_batch_size(qwen_v3) == 10
+
+    seen_batches: list[list[str]] = []
+
+    class FakeEmbeddingsApi:
+        async def create(self, *, model, input, dimensions, encoding_format):
+            assert model == "qwen3.7-text-embedding-flash"
+            assert dimensions == 64
+            assert encoding_format == "float"
+            seen_batches.append(list(input))
+            return SimpleNamespace(
+                data=[SimpleNamespace(index=idx, embedding=[float(idx + 1)] + [0.0] * 63) for idx in range(len(input))],
+                usage=SimpleNamespace(prompt_tokens=len(input) * 5, total_tokens=len(input) * 5),
+            )
+
+    class FakeClient:
+        embeddings = FakeEmbeddingsApi()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.features.knowledge.embeddings._create_openai_client", lambda _: FakeClient())
+    texts = [f"片段-{i}" for i in range(25)]
+    result = asyncio.run(embed_texts(texts, qwen37))
+    assert len(result.vectors) == 25
+    assert sorted(len(batch) for batch in seen_batches) == [5, 20]
+    assert result.usage is not None
+    assert result.usage.input_tokens == 125
+    assert result.usage.total_tokens == 125
+
+
+def test_ingest_and_terms_return_embeddings_and_degrade_gracefully(monkeypatch):
+    from app.features.knowledge.embeddings import EmbeddingBatchResult
+    from app.llm.schemas import ModelUsage
+
+    sample_vec = [0.1] * 64
+
+    async def fake_embed(texts, config):
+        return EmbeddingBatchResult(
+            vectors=[sample_vec for _ in texts],
+            usage=ModelUsage(input_tokens=12, output_tokens=0, total_tokens=12),
+            model=config.model,
+        )
+
+    monkeypatch.setattr("app.features.knowledge.router.embed_texts", fake_embed)
+    monkeypatch.setattr(settings, "token", "")
+    client = TestClient(app)
+
+    embedding_cfg = {
+        "api_key": "sk-test",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.7-text-embedding-flash",
+        "dimensions": 64,
+    }
+    ingest_payload = request("报价.txt", "客户折扣需要销售总监审批".encode()).model_dump()
+    ingest_payload["embedding"] = embedding_cfg
+    ingest_resp = client.post("/v1/knowledge/ingest", json=ingest_payload)
+    assert ingest_resp.status_code == 200
+    ingest_json = ingest_resp.json()
+    assert ingest_json["embedding_model"] == "qwen3.7-text-embedding-flash"
+    assert ingest_json["embedding_usage"]["total_tokens"] == 12
+    assert ingest_json["chunks"][0]["embedding"] == sample_vec
+
+    terms_resp = client.post("/v1/knowledge/terms", json={"query": "打折流程", "embedding": embedding_cfg})
+    assert terms_resp.status_code == 200
+    terms_json = terms_resp.json()
+    assert terms_json["query_embedding"] == sample_vec
+    assert terms_json["embedding_usage"]["total_tokens"] == 12
+
+    async def failing_embed(texts, config):
+        raise RuntimeError("upstream 503")
+
+    monkeypatch.setattr("app.features.knowledge.router.embed_texts", failing_embed)
+    degraded = client.post("/v1/knowledge/ingest", json=ingest_payload)
+    assert degraded.status_code == 200
+    assert degraded.json()["chunks"][0]["embedding"] is None
+    assert "503" in degraded.json()["embedding_error"]
+
+
+def test_hybrid_ranking_recalls_semantic_match_without_lexical_overlap():
+    from app.features.knowledge.workflow import rank_candidates
+
+    candidates = [
+        KnowledgeCandidate(
+            id="semantic-only",
+            title="价格与优惠规则",
+            content="大客户年度采购可申请阶梯返点与特别价格优惠。",
+            vector_score=0.86,
+            vector_rank=1,
+        ),
+        KnowledgeCandidate(
+            id="low-noise",
+            title="考勤制度",
+            content="员工工作日需按时打卡。",
+            vector_score=0.12,
+            vector_rank=10,
+        ),
+    ]
+    sources = rank_candidates("如何给重点客户申请打折", candidates, top_k=3)
+    assert [source.id for source in sources] == ["semantic-only"]
+    assert sources[0].score > 0.5

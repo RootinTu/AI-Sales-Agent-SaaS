@@ -102,12 +102,40 @@ public class PythonAiClient {
 	}
 
 	public PythonDocument ingestDocument(String filename, String title, String category, byte[] content) {
-		return post("/v1/knowledge/ingest", Map.of("filename", filename, "title", title, "category", category,
-				"content_base64", java.util.Base64.getEncoder().encodeToString(content)), PythonDocument.class);
+		return ingestDocument(filename, title, category, content, null, AiModelDefaultsProperties.DEFAULT_EMBEDDING_DIMENSIONS);
+	}
+
+	public PythonDocument ingestDocument(
+			String filename,
+			String title,
+			String category,
+			byte[] content,
+			AiModelRuntimeConfiguration configuration,
+			int embeddingDimensions) {
+		var payload = new java.util.HashMap<String, Object>(Map.of(
+				"filename", filename,
+				"title", title,
+				"category", category,
+				"content_base64", java.util.Base64.getEncoder().encodeToString(content)));
+		if (configuration != null && configuration.embeddingModel() != null && !configuration.embeddingModel().isBlank()) {
+			payload.put("embedding", embeddingPayload(configuration, embeddingDimensions));
+		}
+		return post("/v1/knowledge/ingest", payload, PythonDocument.class);
 	}
 
 	public String knowledgeSearchQuery(String query) {
-		return post("/v1/knowledge/terms", Map.of("query", query), PythonSearchTerms.class).searchQuery();
+		return prepareKnowledgeSearch(query, null, AiModelDefaultsProperties.DEFAULT_EMBEDDING_DIMENSIONS).searchQuery();
+	}
+
+	public PythonSearchTerms prepareKnowledgeSearch(
+			String query,
+			AiModelRuntimeConfiguration configuration,
+			int embeddingDimensions) {
+		var payload = new java.util.HashMap<String, Object>(Map.of("query", query));
+		if (configuration != null && configuration.embeddingModel() != null && !configuration.embeddingModel().isBlank()) {
+			payload.put("embedding", embeddingPayload(configuration, embeddingDimensions));
+		}
+		return post("/v1/knowledge/terms", payload, PythonSearchTerms.class);
 	}
 
 	public PythonKnowledgeAnswer answerKnowledge(AiModelRuntimeConfiguration configuration, String query,
@@ -182,6 +210,15 @@ public class PythonAiClient {
 				"model", configuration.model()));
 	}
 
+	private java.util.HashMap<String, Object> embeddingPayload(
+			AiModelRuntimeConfiguration configuration, int dimensions) {
+		return new java.util.HashMap<>(Map.of(
+				"api_key", configuration.apiKey(),
+				"base_url", configuration.baseUrl(),
+				"model", configuration.embeddingModel(),
+				"dimensions", dimensions > 0 ? dimensions : AiModelDefaultsProperties.DEFAULT_EMBEDDING_DIMENSIONS));
+	}
+
 	private PythonStreamEvent readStreamEvent(String line) {
 		try {
 			return objectMapper.readValue(line, PythonStreamEvent.class);
@@ -192,11 +229,40 @@ public class PythonAiClient {
 	}
 
 	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-	public record PythonDocument(List<PythonDocumentChunk> chunks, int characterCount) {}
+	public record PythonDocument(
+			List<PythonDocumentChunk> chunks,
+			int characterCount,
+			String embeddingModel,
+			PythonUsage embeddingUsage,
+			String embeddingError) {
+		public PythonDocument(List<PythonDocumentChunk> chunks, int characterCount) {
+			this(chunks, characterCount, null, null, null);
+		}
+	}
+
 	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-	public record PythonDocumentChunk(int chunkIndex, Integer pageNumber, String content, String searchTerms) {}
+	public record PythonDocumentChunk(
+			int chunkIndex,
+			Integer pageNumber,
+			String content,
+			String searchTerms,
+			List<Double> embedding) {
+		public PythonDocumentChunk(int chunkIndex, Integer pageNumber, String content, String searchTerms) {
+			this(chunkIndex, pageNumber, content, searchTerms, null);
+		}
+	}
+
 	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-	public record PythonSearchTerms(String searchQuery) {}
+	public record PythonSearchTerms(
+			String searchQuery,
+			List<Double> queryEmbedding,
+			String embeddingModel,
+			PythonUsage embeddingUsage,
+			String embeddingError) {
+		public PythonSearchTerms(String searchQuery) {
+			this(searchQuery, null, null, null, null);
+		}
+	}
 	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 	public record PythonKnowledgeSource(String id, String title, String excerpt, double score, Map<String, Object> metadata) {}
 	@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)

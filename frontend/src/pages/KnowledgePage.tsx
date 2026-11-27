@@ -8,7 +8,7 @@ import { MarkdownContent } from '../components/MarkdownContent'
 import { KnowledgeDocumentPreview } from './KnowledgeDocumentPreview'
 import { useAuth, useIsGuest } from '../auth/use-auth'
 import { getGuestData, guestKnowledgeAnswer } from '../api/guest-data'
-import { askKnowledge, createKnowledgeText, deleteKnowledgeDocument, downloadKnowledgeDocument, editKnowledgeDocument, getKnowledgeDocument, getKnowledgeDocuments, knowledgeCategories, reprocessKnowledgeDocument, replaceKnowledgeFile, setKnowledgeState, uploadKnowledgeDocument, type KnowledgeAnswer, type KnowledgeCategory, type KnowledgeDocument, type KnowledgeMetadata, type KnowledgeSource } from '../api/knowledge-api'
+import { askKnowledge, backfillKnowledgeEmbeddings, createKnowledgeText, deleteKnowledgeDocument, downloadKnowledgeDocument, editKnowledgeDocument, getKnowledgeDocument, getKnowledgeDocuments, knowledgeCategories, reprocessKnowledgeDocument, replaceKnowledgeFile, setKnowledgeState, uploadKnowledgeDocument, type KnowledgeAnswer, type KnowledgeCategory, type KnowledgeDocument, type KnowledgeMetadata, type KnowledgeSource } from '../api/knowledge-api'
 
 const categoryOptions = Object.entries(knowledgeCategories).map(([value, label]) => ({ value, label }))
 const acceptedFiles = '.pdf,.docx,.txt,.md,.markdown'
@@ -57,19 +57,31 @@ export function KnowledgePage() {
     onSuccess: async (doc) => { setEditor(null); setNotice(doc.status === 'FAILED' ? '资料已保存，解析失败，可在详情中重试。' : '资料已保存'); await refresh(doc) },
   })
   const remove = useMutation({ mutationFn: deleteKnowledgeDocument, onSuccess: async () => { setDeleting(null); select(null); setScope(''); setNotice('资料已删除'); await refresh() } })
+  const backfill = useMutation({
+    mutationFn: backfillKnowledgeEmbeddings,
+    onSuccess: async (result) => {
+      setNotice(result.processed === 0
+        ? `全部资料均已完成向量索引（${result.embeddingModel}）`
+        : `向量补齐完成：成功 ${result.succeeded} 份${result.failed ? `，失败 ${result.failed} 份` : ''}${result.remaining ? `，剩余 ${result.remaining} 份可再次执行` : ''}`)
+      await refresh()
+    },
+    onError: (error) => { setNotice(errorText(error)) },
+  })
   const ask = useMutation({
     mutationFn: (input: { question: string; documentId?: string }) => guest ? Promise.resolve(guestKnowledgeAnswer(input.question, input.documentId)) : askKnowledge(input.question, input.documentId),
     onSuccess: (result, input) => { setAnswer(result); setAnsweredQuestion(input.question); void cache.invalidateQueries({ queryKey: ['ai-model-status'] }) },
   })
   const docs = documents.data?.content ?? []
+  const isAdmin = !guest && (role === 'OWNER' || role === 'ADMIN')
+  const hasPendingVectors = docs.some((doc) => doc.status === 'READY' && doc.enabled && doc.chunkCount > 0 && (doc.embeddedChunkCount ?? 0) < doc.chunkCount)
 
   return <section className="module-page knowledge-page">
     <DemoPageHeader demo={guest} title="企业知识库" description="汇集产品资料、销售方法与团队经验。" actions={<button className="button button-primary" disabled={readOnly} onClick={() => { save.reset(); setEditor('new') }}><Plus size={16} />新增资料</button>} />
     <div className="knowledge-tabs" role="tablist" aria-label="知识库视图"><button role="tab" aria-selected={tab === 'DOCUMENTS'} onClick={() => setTab('DOCUMENTS')}><BookOpen size={17} />资料库</button><button role="tab" aria-selected={tab === 'ASK'} onClick={() => setTab('ASK')}><MagnifyingGlass size={17} />知识问答</button></div>
     {notice && <div className="crm-inline-notice" role="status">{notice}<button onClick={() => setNotice('')}>关闭</button></div>}
     {tab === 'DOCUMENTS' ? <section className="knowledge-library" aria-label="资料库">
-      <div className="module-toolbar"><div><h2>团队资料</h2><span>{documents.data?.totalElements ?? 0} 份资料</span></div><div className="toolbar-controls"><label className="compact-search"><MagnifyingGlass size={15} /><input aria-label="搜索资料" placeholder="搜索标题或文件名" value={search} onChange={(event) => { setSearch(event.target.value); setPage(0) }} /></label><SelectField className="is-compact" ariaLabel="筛选资料分类" value={category} onChange={(value) => { setCategory(value); setPage(0) }} options={[{ value: '', label: '全部分类' }, ...categoryOptions]} /><button className="icon-button" title="刷新资料" aria-label="刷新资料" onClick={() => void documents.refetch()} disabled={documents.isFetching || guest}><ArrowClockwise size={17} /></button></div></div>
-      {documents.isPending ? <Empty>正在读取资料…</Empty> : documents.isError ? <Empty error>{errorText(documents.error)}</Empty> : !docs.length ? <Empty>{query || category ? '没有符合条件的资料' : '暂无资料'}</Empty> : <div className="workspace-table-wrap"><table className="workspace-table knowledge-table"><thead><tr><th>资料</th><th>分类</th><th>可见范围</th><th>状态</th><th>片段</th><th>上传者</th><th>更新时间</th></tr></thead><tbody>{docs.map((doc) => <tr key={doc.id}><td><button className="knowledge-document-link" onClick={() => select(doc.id)}><FileText size={19} /><span><strong>{doc.title}</strong><small>{doc.filename} · {fileSize(doc.sizeBytes)}</small></span></button></td><td>{knowledgeCategories[doc.category]}</td><td>{doc.visibility === 'TEAM' ? '团队共享' : '个人私有'}</td><td><DocumentStatus doc={doc} /></td><td>{doc.chunkCount}</td><td>{doc.uploadedByName}</td><td>{new Date(doc.updatedAt).toLocaleDateString('zh-CN')}</td></tr>)}</tbody></table></div>}
+      <div className="module-toolbar"><div><h2>团队资料</h2><span>{documents.data?.totalElements ?? 0} 份资料</span></div><div className="toolbar-controls">{isAdmin && hasPendingVectors && <button className="button button-secondary compact-button" type="button" disabled={backfill.isPending} onClick={() => backfill.mutate()}>{backfill.isPending ? '正在向量化…' : '补齐向量索引'}</button>}<label className="compact-search"><MagnifyingGlass size={15} /><input aria-label="搜索资料" placeholder="搜索标题或文件名" value={search} onChange={(event) => { setSearch(event.target.value); setPage(0) }} /></label><SelectField className="is-compact" ariaLabel="筛选资料分类" value={category} onChange={(value) => { setCategory(value); setPage(0) }} options={[{ value: '', label: '全部分类' }, ...categoryOptions]} /><button className="icon-button" title="刷新资料" aria-label="刷新资料" onClick={() => void documents.refetch()} disabled={documents.isFetching || guest}><ArrowClockwise size={17} /></button></div></div>
+      {documents.isPending ? <Empty>正在读取资料…</Empty> : documents.isError ? <Empty error>{errorText(documents.error)}</Empty> : !docs.length ? <Empty>{query || category ? '没有符合条件的资料' : '暂无资料'}</Empty> : <div className="workspace-table-wrap"><table className="workspace-table knowledge-table"><thead><tr><th>资料</th><th>分类</th><th>可见范围</th><th>状态</th><th>片段与索引</th><th>上传者</th><th>更新时间</th></tr></thead><tbody>{docs.map((doc) => <tr key={doc.id}><td><button className="knowledge-document-link" onClick={() => select(doc.id)}><FileText size={19} /><span><strong>{doc.title}</strong><small>{doc.filename} · {fileSize(doc.sizeBytes)}</small></span></button></td><td>{knowledgeCategories[doc.category]}</td><td>{doc.visibility === 'TEAM' ? '团队共享' : '个人私有'}</td><td><DocumentStatus doc={doc} /></td><td><span className="knowledge-index-cell">{doc.chunkCount}<VectorBadge doc={doc} /></span></td><td>{doc.uploadedByName}</td><td>{new Date(doc.updatedAt).toLocaleDateString('zh-CN')}</td></tr>)}</tbody></table></div>}
       {documents.data && documents.data.totalPages > 1 && <Pagination page={page} totalPages={documents.data.totalPages} onChange={setPage} />}
     </section> : <section className="knowledge-ask" aria-label="知识问答">
       <form className="knowledge-question" onSubmit={(event) => { event.preventDefault(); setAnswer(null); ask.mutate({ question: question.trim(), documentId: scope || undefined }) }}>
@@ -86,6 +98,12 @@ export function KnowledgePage() {
 }
 
 function DocumentStatus({ doc }: { doc: KnowledgeDocument }) { return <span className={`knowledge-status is-${doc.enabled ? doc.status.toLowerCase() : 'disabled'}`}>{doc.enabled ? statusLabels[doc.status] : '已停用'}</span> }
+function VectorBadge({ doc }: { doc: KnowledgeDocument }) {
+  if (doc.status !== 'READY' || doc.chunkCount <= 0) return null
+  const embedded = doc.embeddedChunkCount ?? 0
+  if (embedded >= doc.chunkCount) return <span className="knowledge-vector-badge is-vector" title={doc.embeddingModel ? `向量模型：${doc.embeddingModel}` : '已建立语义向量索引'}>向量索引</span>
+  return <span className="knowledge-vector-badge is-lexical" title="尚未完成语义向量化，可点击重新解析或批量补齐">仅全文</span>
+}
 function Empty({ children, error = false }: { children: ReactNode; error?: boolean }) { return <div className="knowledge-empty" role={error ? 'alert' : 'status'}>{error ? <WarningCircle size={26} /> : <BookOpen size={30} />}<p>{children}</p></div> }
 function Pagination({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (page: number) => void }) { return <footer className="table-pagination"><span>第 {page + 1} / {Math.max(1, totalPages)} 页</span><div><button disabled={!page} onClick={() => onChange(page - 1)}>上一页</button><button disabled={page + 1 >= totalPages} onClick={() => onChange(page + 1)}>下一页</button></div></footer> }
 function Source({ source, index, onOpen }: { source: KnowledgeSource; index: number; onOpen: () => void }) { return <article className="knowledge-source"><button onClick={onOpen}>[资料 {index + 1}] {source.title}<span>{source.pageNumber ? `第 ${source.pageNumber} 页` : `片段 ${source.chunkIndex + 1}`} · 第 {source.revision} 版</span></button><details><summary>查看引用原文</summary><p>{source.excerpt}</p></details></article> }
@@ -100,7 +118,7 @@ function DocumentDrawer({ id, guest, onClose, onRefresh, onEdit, onDelete, onAsk
   const doc = detail.data
   return <div className="crm-detail-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !action.isPending && onClose()}><aside className="knowledge-drawer" role="dialog" aria-modal="true" aria-label="资料详情"><header><h2>{doc?.title ?? '资料详情'}</h2><button className="icon-button" aria-label="关闭资料详情" onClick={onClose}><X size={20} /></button></header>
     {detail.isPending ? <Empty>正在读取资料…</Empty> : detail.isError ? <Empty error>{errorText(detail.error)}</Empty> : doc && <>
-      <div className="knowledge-document-meta"><DocumentStatus doc={doc} /><span>{knowledgeCategories[doc.category]}</span><span>{doc.visibility === 'TEAM' ? '团队共享' : '个人私有'}</span><span>第 {doc.revision} 版 · {doc.chunkCount} 个片段</span></div>
+      <div className="knowledge-document-meta"><DocumentStatus doc={doc} /><span>{knowledgeCategories[doc.category]}</span><span>{doc.visibility === 'TEAM' ? '团队共享' : '个人私有'}</span><span>第 {doc.revision} 版 · {doc.chunkCount} 个片段</span><VectorBadge doc={doc} />{doc.embeddingModel && <span>{doc.embeddingModel}</span>}</div>
       {doc.errorMessage && <p className="form-error" role="alert">{doc.errorMessage}</p>}
       <div className="knowledge-document-actions"><button className="button button-secondary" disabled={guest || download.isPending} onClick={() => download.mutate()}><DownloadSimple size={16} />下载原文件</button><button className="button button-primary" disabled={doc.status !== 'READY' || !doc.enabled} onClick={() => onAsk(doc)}><MagnifyingGlass size={16} />基于此资料提问</button></div>
       {doc.canManage && <section className="knowledge-management"><div><button className="icon-button" title="编辑资料" aria-label="编辑资料" disabled={action.isPending || doc.status === 'PROCESSING'} onClick={() => onEdit(doc)}><PencilSimple size={18} /></button><button className="icon-button" title={doc.enabled ? '停用资料' : '启用资料'} aria-label={doc.enabled ? '停用资料' : '启用资料'} disabled={action.isPending} onClick={() => action.mutate('state')}><Power size={18} /></button><button className="icon-button" title="重新解析" aria-label="重新解析" disabled={action.isPending} onClick={() => action.mutate('reprocess')}><ArrowClockwise size={18} /></button><button className="icon-button" title="删除资料" aria-label="删除资料" disabled={action.isPending} onClick={() => onDelete(doc)}><Trash size={18} /></button></div><label className="knowledge-replace"><span>更新原文件</span><input aria-label="更新原文件" type="file" accept={acceptedFiles} disabled={action.isPending || doc.status === 'PROCESSING'} onChange={(event) => { const next = event.target.files?.[0]; event.target.value = ''; if (next) { const error = fileError(next); setLocalError(error); setFile(error ? null : next) } }} /></label>{file && <div className="knowledge-selected-file"><span>{file.name}</span><button className="button button-primary" disabled={action.isPending} onClick={() => action.mutate('replace')}><UploadSimple size={15} />上传并重新解析</button></div>}</section>}

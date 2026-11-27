@@ -5,8 +5,12 @@ export type KnowledgeCategory = keyof typeof knowledgeCategories
 export interface KnowledgeDocument {
   id: string; title: string; category: KnowledgeCategory; visibility: 'TEAM' | 'PRIVATE'
   status: 'PROCESSING' | 'READY' | 'FAILED' | 'DELETED'; enabled: boolean
-  chunkCount: number; characterCount: number; errorMessage: string | null; revision: number; version: number
+  chunkCount: number; embeddedChunkCount?: number; embeddingModel?: string | null
+  characterCount: number; errorMessage: string | null; revision: number; version: number
   filename: string; sizeBytes: number; uploadedByName: string; createdAt: string; updatedAt: string; canManage: boolean
+}
+export interface KnowledgeBackfillResult {
+  processed: number; succeeded: number; failed: number; remaining: number; embeddingModel: string
 }
 export interface KnowledgeMetadata { title: string; category: KnowledgeCategory; visibility: 'TEAM' | 'PRIVATE'; version?: number }
 export interface KnowledgePage<T> { content: T[]; totalElements: number; totalPages: number; page: number; size: number; first: boolean; last: boolean }
@@ -40,6 +44,7 @@ export function replaceKnowledgeFile(doc: KnowledgeDocument, file: File) {
   return requestJson<KnowledgeDocument>(`${base}/documents/${doc.id}/replace`, { method: 'POST', data: form, timeout: 180000 })
 }
 export function deleteKnowledgeDocument(doc: KnowledgeDocument) { return requestJson<void>(`${base}/documents/${doc.id}`, { method: 'DELETE', params: { version: doc.version } }) }
+export function backfillKnowledgeEmbeddings() { return requestJson<KnowledgeBackfillResult>(`${base}/documents/backfill-embeddings`, { method: 'POST', timeout: 300000 }) }
 export function askKnowledge(question: string, documentId?: string) { return requestJson<KnowledgeAnswer>(`${base}/query`, { method: 'POST', data: { question, documentId }, timeout: 180000 }) }
 export async function downloadKnowledgeDocument(doc: KnowledgeDocument) {
   const blob = await requestJson<Blob>(`${base}/documents/${doc.id}/file`, { method: 'GET', responseType: 'blob' })

@@ -78,6 +78,8 @@ app:
     defaults:
       base-url: ${QWEN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
       model: ${QWEN_MODEL:qwen-plus}
+      embedding-model: ${QWEN_EMBEDDING_MODEL:qwen3.7-text-embedding-flash}
+      embedding-dimensions: ${QWEN_EMBEDDING_DIMENSIONS:1024}
     python:
       base-url: ${AI_SERVICE_BASE_URL:http://127.0.0.1:8090}
       service-token: ${AI_SERVICE_TOKEN:}

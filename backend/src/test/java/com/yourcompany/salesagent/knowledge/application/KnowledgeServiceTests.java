@@ -38,8 +38,12 @@ class KnowledgeServiceTests {
 	@BeforeEach
 	void setup() {
 		when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-		when(python.knowledgeSearchQuery(anyString())).thenReturn("报价 | 审批");
-		when(models.requireRuntimeConfiguration(org, member)).thenReturn(new AiModelRuntimeConfiguration("QWEN", "test", "https://example.invalid/v1", "key"));
+		when(models.defaultEmbeddingDimensions()).thenReturn(1024);
+		when(models.findRuntimeConfiguration(org)).thenReturn(Optional.empty());
+		when(python.prepareKnowledgeSearch(anyString(), any(), anyInt()))
+				.thenReturn(new PythonAiClient.PythonSearchTerms("报价 | 审批"));
+		when(models.requireRuntimeConfiguration(org, member))
+				.thenReturn(new AiModelRuntimeConfiguration("QWEN", "test", "qwen3.7-text-embedding-flash", "https://example.invalid/v1", "key"));
 	}
 	@Test
 	void noQuotaPreventsRetrievalAndModelUse() {
@@ -108,10 +112,69 @@ class KnowledgeServiceTests {
 		when(files.uploadContent(any(), any(), any(), any(), any())).thenReturn(UploadedFileResponse.from(file));
 		when(mapper.selectDocument(eq(org), eq(member), any())).thenReturn(row);
 		when(files.requireActive(org, row.getFileId())).thenReturn(file);
-		when(python.ingestDocument(any(), any(), any(), any())).thenThrow(new PythonAiClient.PythonAiException("Document: 文件无法解析"));
+		when(python.ingestDocument(any(), any(), any(), any(), any(), anyInt())).thenThrow(new PythonAiClient.PythonAiException("Document: 文件无法解析"));
 		when(mapper.completeProcessing(eq(org), any(), eq(1L), eq(0), eq(0), anyString(), eq(now))).thenAnswer(call -> { row.setStatus("FAILED"); row.setErrorMessage(call.getArgument(5)); return 1; });
 		var result = service.createText(actor("SALES"), new KnowledgeTextRequest(new KnowledgeDocumentRequest("资料", "OTHER", "TEAM", null), "正文"));
 		assertThat(result.status()).isEqualTo("FAILED");
 		assertThat(result.errorMessage()).isEqualTo("文件无法解析");
+	}
+	@Test
+	void hybridRetrievalMergesVectorAndLexicalHitsAndRecordsEmbeddingUsage() {
+		var semanticChunk = UUID.randomUUID();
+		when(python.prepareKnowledgeSearch(eq("重点客户打折流程"), any(), eq(1024)))
+				.thenReturn(new PythonAiClient.PythonSearchTerms(
+						"重点 | 客户 | 打折",
+						List.of(0.1, 0.2, 0.3),
+						"qwen3.7-text-embedding-flash",
+						new PythonAiClient.PythonUsage(8, 0, 8, 0L),
+						null));
+		when(mapper.selectVectorCandidates(org, member, "[0.1,0.2,0.3]", "qwen3.7-text-embedding-flash", null))
+				.thenReturn(List.of(new KnowledgeVectorCandidateRow(semanticChunk, document, 0, 1, "价格政策", "大客户年度采购可申请阶梯返点", 1, 0.88)));
+		when(mapper.selectCandidates(org, member, "重点 | 客户 | 打折", null))
+				.thenReturn(List.of(new KnowledgeChunkResponse(chunk, document, 1, 2, "报价流程", "折扣需总监审批", 1)));
+		when(python.answerKnowledge(any(), eq("重点客户打折流程"), argThat(list -> list.size() == 2
+				&& Double.valueOf(0.88).equals(list.get(0).get("vector_score"))
+				&& Integer.valueOf(1).equals(list.get(0).get("vector_rank"))
+				&& Integer.valueOf(1).equals(list.get(1).get("lexical_rank")))))
+				.thenReturn(new PythonAiClient.PythonKnowledgeAnswer(
+						"大客户可申请阶梯返点并由总监审批。[资料 1]",
+						new PythonAiClient.PythonUsage(30, 12, 42, 0L),
+						"req-hybrid",
+						"qwen-plus",
+						List.of(new PythonAiClient.PythonKnowledgeSource(semanticChunk.toString(), "价格政策", "大客户年度采购可申请阶梯返点", 0.82, Map.of()))));
+		when(mapper.sourceAvailable(org, member, semanticChunk, 1)).thenReturn(1);
+
+		var response = service.ask(actor("SALES"), new KnowledgeQueryRequest("重点客户打折流程", null));
+
+		assertThat(response.sources()).hasSize(1);
+		assertThat(response.sources().get(0).id()).isEqualTo(semanticChunk);
+		verify(recorder).record(argThat(call -> "KNOWLEDGE_EMBEDDING".equals(call.purpose()) && call.usage().totalTokens() == 8));
+		verify(recorder).record(argThat(call -> "KNOWLEDGE_QA".equals(call.purpose()) && call.usage().totalTokens() == 42));
+	}
+	@Test
+	void uploadEmbedsChunksAndPersistsVectorLiteral() {
+		var row = row(); row.setStatus("PROCESSING"); row.setTitle("价格政策");
+		var file = UploadedFile.create(row.getFileId(), org, member, null, "政策.txt", "text/plain", "折扣审批规则".getBytes(java.nio.charset.StandardCharsets.UTF_8), "0".repeat(64), now);
+		var config = new AiModelRuntimeConfiguration("QWEN", "qwen-plus", "qwen3.7-text-embedding-flash", "https://dashscope.aliyuncs.com/compatible-mode/v1", "sk-test");
+		when(models.findRuntimeConfiguration(org)).thenReturn(Optional.of(config));
+		when(files.uploadContent(any(), any(), any(), any(), any())).thenReturn(UploadedFileResponse.from(file));
+		when(mapper.selectDocument(eq(org), eq(member), any())).thenReturn(row);
+		when(mapper.lockDocument(eq(org), eq(member), any())).thenReturn(row);
+		when(files.requireActive(org, row.getFileId())).thenReturn(file);
+		when(python.ingestDocument(eq("政策.txt"), eq("价格政策"), eq("POLICY"), any(), eq(config), eq(1024)))
+				.thenReturn(new PythonAiClient.PythonDocument(
+						List.of(new PythonAiClient.PythonDocumentChunk(0, null, "折扣审批规则", "折扣 审批", List.of(0.25, -0.5))),
+						6,
+						"qwen3.7-text-embedding-flash",
+						new PythonAiClient.PythonUsage(15, 0, 15, 0L),
+						null));
+		when(mapper.completeProcessing(eq(org), any(), eq(1L), eq(1), eq(6), isNull(), eq(now))).thenAnswer(call -> { row.setStatus("READY"); row.setChunkCount(1); row.setEmbeddedChunkCount(1); return 1; });
+
+		var result = service.createText(actor("SALES"), new KnowledgeTextRequest(new KnowledgeDocumentRequest("价格政策", "POLICY", "TEAM", null), "折扣审批规则"));
+
+		assertThat(result.status()).isEqualTo("READY");
+		assertThat(result.embeddedChunkCount()).isEqualTo(1);
+		verify(mapper).insertChunk(eq(org), any(), eq(row.getId()), eq(1L), eq(0), isNull(), eq("折扣审批规则"), eq("折扣 审批"), eq("[0.25,-0.5]"), eq("qwen3.7-text-embedding-flash"));
+		verify(recorder).record(argThat(call -> "KNOWLEDGE_EMBEDDING".equals(call.purpose()) && call.usage().totalTokens() == 15));
 	}
 }

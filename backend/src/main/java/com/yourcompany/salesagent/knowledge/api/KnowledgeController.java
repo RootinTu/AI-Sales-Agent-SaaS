@@ -58,6 +58,10 @@ public class KnowledgeController {
 	@DeleteMapping("/documents/{id}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
 	public void delete(Authentication authentication, @PathVariable UUID id, @RequestParam @Min(0) long version) { service.delete(actor(authentication), id, version); }
+	@PostMapping("/documents/backfill-embeddings")
+	public KnowledgeBackfillResponse backfillEmbeddings(Authentication authentication) {
+		return service.backfillEmbeddings(actor(authentication));
+	}
 	@PostMapping("/query")
 	public KnowledgeAnswerResponse query(Authentication authentication, @Valid @RequestBody KnowledgeQueryRequest input) { return service.ask(actor(authentication), input); }
 	private static AuthPrincipal actor(Authentication authentication) { return (AuthPrincipal) authentication.getPrincipal(); }

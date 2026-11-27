@@ -2,6 +2,7 @@ package com.yourcompany.salesagent.ai.application;
 
 import java.net.URI;
 import java.time.Clock;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -58,6 +59,7 @@ public class AiModelService {
 			return new AiModelStatusResponse(
 					"QWEN",
 					properties.model(),
+					properties.embeddingModel(),
 					properties.baseUrl(),
 					false,
 					false,
@@ -68,6 +70,7 @@ public class AiModelService {
 		return new AiModelStatusResponse(
 				configuration.getProvider(),
 				configuration.getModelName(),
+				effectiveEmbeddingModel(configuration.getEmbeddingModel()),
 				configuration.getBaseUrl(),
 				true,
 				ready,
@@ -87,16 +90,18 @@ public class AiModelService {
 			throw new AiModelConfigurationException("首次保存时必须输入 API Key");
 		}
 		var now = clock.instant();
+		var embeddingModel = StringUtils.hasText(request.embeddingModel()) ? request.embeddingModel().strip() : null;
 		if (configuration == null) {
 			configurationMapper.insert(AiModelConfiguration.create(
 					organizationId,
 					request.model().strip(),
+					embeddingModel,
 					request.baseUrl().strip(),
 					encryptedApiKey,
 					now));
 		}
 		else {
-			configuration.update(request.model().strip(), request.baseUrl().strip(), encryptedApiKey, now);
+			configuration.update(request.model().strip(), embeddingModel, request.baseUrl().strip(), encryptedApiKey, now);
 			configurationMapper.updateById(configuration);
 		}
 		return status(organizationId);
@@ -129,8 +134,42 @@ public class AiModelService {
 		return new AiModelRuntimeConfiguration(
 				configuration.getProvider(),
 				configuration.getModelName(),
+				effectiveEmbeddingModel(configuration.getEmbeddingModel()),
 				configuration.getBaseUrl(),
 				secretCipher.decrypt(organizationId, configuration.getEncryptedApiKey()));
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<AiModelRuntimeConfiguration> findRuntimeConfiguration(UUID organizationId) {
+		var configuration = configurationMapper.selectById(organizationId);
+		if (configuration == null) {
+			return Optional.empty();
+		}
+		try {
+			var decrypted = secretCipher.decrypt(organizationId, configuration.getEncryptedApiKey());
+			if (!StringUtils.hasText(decrypted)) {
+				return Optional.empty();
+			}
+			return Optional.of(new AiModelRuntimeConfiguration(
+					configuration.getProvider(),
+					configuration.getModelName(),
+					effectiveEmbeddingModel(configuration.getEmbeddingModel()),
+					configuration.getBaseUrl(),
+					decrypted));
+		}
+		catch (SecretEncryptionException exception) {
+			return Optional.empty();
+		}
+	}
+
+	public int defaultEmbeddingDimensions() {
+		return properties.embeddingDimensions();
+	}
+
+	private String effectiveEmbeddingModel(String configuredEmbeddingModel) {
+		return StringUtils.hasText(configuredEmbeddingModel)
+				? configuredEmbeddingModel.strip()
+				: properties.embeddingModel();
 	}
 
 	@Transactional(readOnly = true)

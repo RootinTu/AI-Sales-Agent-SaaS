@@ -5,6 +5,7 @@ export type AiModelStatusCode = 'READY' | 'MISSING_API_KEY' | 'ENCRYPTION_KEY_UN
 export interface AiModelStatus {
   provider: 'QWEN'
   model: string
+  embeddingModel?: string
   baseUrl: string
   apiKeyConfigured: boolean
   ready: boolean
@@ -37,6 +38,7 @@ export interface AiModelTestResult {
 export interface AiModelUpdateInput {
   provider: 'QWEN'
   model: string
+  embeddingModel?: string
   baseUrl: string
   apiKey?: string
 }
