@@ -213,6 +213,13 @@ def test_hybrid_ranking_recalls_semantic_match_without_lexical_overlap():
             vector_rank=1,
         ),
         KnowledgeCandidate(
+            id="weak-unrelated",
+            title="React 前端笔记",
+            content="组件状态更新与 TypeScript 泛型推导。",
+            vector_score=0.45,
+            vector_rank=2,
+        ),
+        KnowledgeCandidate(
             id="low-noise",
             title="考勤制度",
             content="员工工作日需按时打卡。",

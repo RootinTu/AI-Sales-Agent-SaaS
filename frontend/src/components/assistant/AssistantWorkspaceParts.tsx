@@ -21,6 +21,7 @@ import { approveApproval, getApproval, rejectApproval, type Approval } from '../
 import { getMembers, getTeamTokenBudget, updateMemberTokenQuota, updateTeamTokenBudget, type AdminMember, type TeamTokenBudget } from '../../api/admin-api'
 import { ApiError } from '../../api/axios-client'
 import { useIsGuest } from '../../auth/use-auth'
+import { MarkdownContent } from '../MarkdownContent'
 import { AssistantActivity } from './AssistantActivity'
 import {
   formatCompactNumber,
@@ -361,6 +362,11 @@ function MessageAttachmentList({ attachments }: { attachments: UploadedFile[] })
 function AssistantOutput({ message }: { message: ChatMessage }) {
   const traces = message.traces ?? []
   const approvalIds = dataApprovalIds(message.data)
+  const isAgentMode = message.data?.assistantMode === 'AGENT'
+  const progressSteps = (message.progressSteps && message.progressSteps.length > 0)
+    ? message.progressSteps
+    : (message.progress ? [message.progress] : [])
+  const thinkingTitle = message.thinkingLabel ?? (isAgentMode ? '自主 Agent 思考中' : '助手正在处理')
   const knowledgeSources = Array.isArray(message.data?.knowledgeSources)
     ? message.data.knowledgeSources.flatMap((source: unknown) => {
       if (!source || typeof source !== 'object') return []
@@ -372,18 +378,39 @@ function AssistantOutput({ message }: { message: ChatMessage }) {
   return (
     <div className="mcp-assistant-output">
       {message.streaming ? (
-        <div className="mcp-pending-head" aria-label="Agent 执行进度">
-          <CircleNotch size={18} className="mcp-spin" />
-          <div><strong>Agent 正在处理</strong><span>{message.progress}</span></div>
+        <div className={`mcp-thinking-chain${isAgentMode ? ' is-agent' : ''}`} aria-label={isAgentMode ? '自主 Agent 思考链' : '助手执行进度'}>
+          <div className="mcp-pending-head">
+            <CircleNotch size={16} className="mcp-spin" />
+            <strong>{thinkingTitle}</strong>
+            {isAgentMode ? <em className="mcp-output-mode-badge">自主 Agent</em> : null}
+          </div>
+          {progressSteps.length > 0 ? (
+            <ol className="mcp-thinking-chain-list">
+              {progressSteps.map((step, index) => {
+                const isLatest = index === progressSteps.length - 1
+                return (
+                  <li key={`${index}-${step}`} className={isLatest ? 'is-active' : 'is-done'}>
+                    <span className="mcp-chain-dot" aria-hidden />
+                    <span>{step}</span>
+                  </li>
+                )
+              })}
+            </ol>
+          ) : null}
         </div>
       ) : null}
-      <section className="mcp-output-card">
-        <header>
-          <Sparkle size={14} />结果输出
-          {message.data?.assistantMode === 'AGENT' ? <em className="mcp-output-mode-badge">自主 Agent</em> : null}
-        </header>
-        <p>{message.content}{message.streaming && message.content ? <span className="mcp-stream-cursor" aria-hidden>▍</span> : null}</p>
-      </section>
+      {message.content || !message.streaming ? (
+        <section className="mcp-output-card">
+          <header>
+            <Sparkle size={14} />结果输出
+            {isAgentMode ? <em className="mcp-output-mode-badge">自主 Agent</em> : null}
+          </header>
+          <div className="mcp-output-body">
+            {message.content ? <MarkdownContent content={message.content} /> : null}
+            {message.streaming && message.content ? <span className="mcp-stream-cursor" aria-hidden>▍</span> : null}
+          </div>
+        </section>
+      ) : null}
       {knowledgeSources.length > 0 && (
         <div className="mcp-knowledge-sources" aria-label="知识库引用">
           {knowledgeSources.map((source, index) => (

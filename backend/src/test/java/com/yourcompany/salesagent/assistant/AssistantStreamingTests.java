@@ -153,7 +153,7 @@ class AssistantStreamingTests {
 	void answersCapabilityQuestionWithoutCallingPythonPlanner() {
 		service.streamChat(principal, conversationId, "你能做什么？", null, this::receive);
 
-		assertThat(saved.content()).contains("我现在可以帮你自动化这些事").contains("给客户发送方案、报价或合同附件");
+		assertThat(saved.content()).contains("MCP 轻辅助模式").contains("准备带附件的方案/报价邮件");
 		assertThat(saved.toolTraces()).anyMatch(trace -> trace.name().equals("assistant.router"));
 		verify(model, never()).planAssistantAction(any(), anyString(), anyMap(), anyList());
 		verify(model, never()).streamAssistantReplyWithUsage(any(), anyString(), anyString());
@@ -263,6 +263,15 @@ class AssistantStreamingTests {
         verifyNoInteractions(agentService);
         assertThat(saved.content()).contains("多个相似客户");
     }
+
+	@Test
+	void lightModeBlocksAutonomousAgentRunAndGuidesUserToAgentWorkspace() {
+		service.streamChat(principal, conversationId, "运行 Agent 分析云岚科技", null, "LIGHT", false, this::receive);
+
+		verifyNoInteractions(agentService);
+		assertThat(saved.content()).contains("MCP 助手仅支持").contains("自主 Agent");
+		assertThat(saved.data()).containsEntry("agentModeRestricted", true);
+	}
 
 	@Test
 	void restrictsAgentModeToDesktopClientsAndSvipOrganizations() {

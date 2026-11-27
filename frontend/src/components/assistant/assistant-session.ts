@@ -24,6 +24,8 @@ export interface ChatMessage {
   createdAt: string
   streaming?: boolean
   progress?: string
+  progressSteps?: string[]
+  thinkingLabel?: string
   error?: string
 }
 
@@ -115,7 +117,14 @@ export function useAssistantChatSession({
       setMessages((current) => current.map((message) => {
         if (message.id !== pendingId.current) return message
         if (event.type === 'delta') return { ...message, content: message.content + event.data.text }
-        if (event.type === 'progress') return { ...message, progress: event.data.text }
+        if (event.type === 'progress') {
+          const text = event.data.text.trim()
+          const currentSteps = message.progressSteps ?? []
+          const nextSteps = text && currentSteps[currentSteps.length - 1] !== text
+            ? [...currentSteps, text].slice(-6)
+            : currentSteps
+          return { ...message, progress: text, progressSteps: nextSteps }
+        }
         if (event.type === 'summary') return { ...message, reasoningSummary: event.data.text }
         if (event.type === 'tool') {
           return {
@@ -220,6 +229,7 @@ export function useAssistantChatSession({
     streamController.current = new AbortController()
     pendingId.current = crypto.randomUUID()
     setUseLocalMessages(true)
+    const initialThinking = buildInitialThinkingChain(mode, content, pendingProgressText)
     setMessages([...displayedMessages, {
       id: crypto.randomUUID(),
       role: 'user',
@@ -231,7 +241,9 @@ export function useAssistantChatSession({
       role: 'assistant',
       content: '',
       streaming: true,
-      progress: pendingProgressText,
+      thinkingLabel: initialThinking.title,
+      progress: initialThinking.steps[initialThinking.steps.length - 1],
+      progressSteps: initialThinking.steps,
       data: { assistantMode: mode },
       createdAt: new Date().toISOString(),
     }])
@@ -307,6 +319,60 @@ function toChatMessage(message: AssistantMessage): ChatMessage {
     attachments: dataAttachments(message.data),
     data: message.data,
     createdAt: message.createdAt,
+  }
+}
+
+export function buildInitialThinkingChain(
+  mode: AssistantMode,
+  prompt: string,
+  fallbackStep: string,
+): { title: string; steps: string[] } {
+  const text = prompt.trim()
+  if (mode === 'AGENT') {
+    if (/邮件|起草|发给|发送/.test(text)) {
+      return {
+        title: '自主 Agent 思考中',
+        steps: ['加载多轮会话记忆与客户背景', '规划客户/报价与知识库检索，准备起草待审批邮件'],
+      }
+    }
+    if (/商机|报价|客户|分析|跟进/.test(text)) {
+      return {
+        title: '自主 Agent 思考中',
+        steps: ['读取上下文记忆并拆解跨模块目标', '规划多步 CRM 数据排查与自主执行路径'],
+      }
+    }
+    return {
+      title: '自主 Agent 思考中',
+      steps: ['加载自主 Agent 记忆上下文', fallbackStep],
+    }
+  }
+  if (/审批|批准/.test(text)) {
+    return {
+      title: '工作流处理中',
+      steps: [fallbackStep, '解析审批指令并读取待审批记录'],
+    }
+  }
+  if (/跟进|任务/.test(text)) {
+    return {
+      title: '工作流处理中',
+      steps: [fallbackStep, '查询当前开放中的跟进任务'],
+    }
+  }
+  if (/新增客户|导入聊天|发送方案|发送报价/.test(text)) {
+    return {
+      title: '工作流处理中',
+      steps: [fallbackStep, '提取业务字段并校验客户档案'],
+    }
+  }
+  if (/知识库|政策|折扣|打折|制度|流程|怎么|如何|什么|为什么/.test(text)) {
+    return {
+      title: '知识检索与问答中',
+      steps: [fallbackStep, '理解问题语义并检索企业知识库'],
+    }
+  }
+  return {
+    title: '助手正在处理',
+    steps: [fallbackStep],
   }
 }
 

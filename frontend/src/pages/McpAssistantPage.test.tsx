@@ -124,7 +124,7 @@ describe('McpAssistantPage', () => {
     vi.restoreAllMocks()
   })
 
-  it('发送指令时展示 Agent 思考过程加载态', async () => {
+  it('发送指令时根据不同用法展示对应的动态思考链', async () => {
     vi.mocked(streamMcpChatMessage).mockReturnValue(new Promise(() => undefined))
     const user = userEvent.setup()
     renderMcpAssistantPage()
@@ -132,10 +132,34 @@ describe('McpAssistantPage', () => {
     await user.type(screen.getByPlaceholderText(/给云岚科技导入聊天/), '查看待审批')
     await user.click(screen.getByRole('button', { name: /发送指令/ }))
 
-    expect(await screen.findByText('Agent 正在处理')).toBeInTheDocument()
+    expect(await screen.findByText('工作流处理中')).toBeInTheDocument()
     expect(screen.getByText('正在连接助手…')).toBeInTheDocument()
+    expect(screen.getByText('解析审批指令并读取待审批记录')).toBeInTheDocument()
     expect(screen.queryByText('规划工具调用')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Agent 执行进度')).toBeInTheDocument()
+    expect(screen.getByLabelText('助手执行进度')).toBeInTheDocument()
+  })
+
+  it('结果输出默认以 Markdown 渲染标题、加粗与列表', async () => {
+    const response: AssistantChatResponse = {
+      conversationId: 'conversation-md',
+      messageId: 'message-md',
+      role: 'assistant',
+      content: '## 可确认的内容\n\n- **适用条件**：年度采购额超过 50 万元',
+      reasoningSummary: '检索企业知识库并根据资料回答。',
+      toolTraces: [{ name: 'knowledge.query', status: 'SUCCEEDED', summary: '引用 1 个知识片段' }],
+      data: { assistantMode: 'LIGHT' },
+      createdAt: '2026-09-05T08:00:00Z',
+    }
+    vi.mocked(streamMcpChatMessage).mockResolvedValue(response)
+    const user = userEvent.setup()
+    renderMcpAssistantPage()
+
+    await user.type(screen.getByPlaceholderText(/给云岚科技导入聊天/), '大客户怎么申请打折')
+    await user.click(screen.getByRole('button', { name: /发送指令/ }))
+
+    expect(await screen.findByRole('heading', { level: 2, name: '可确认的内容' })).toBeInTheDocument()
+    expect(screen.getByText('适用条件').tagName).toBe('STRONG')
+    expect(screen.queryByText('## 可确认的内容')).not.toBeInTheDocument()
   })
 
   it('点击工具卡片后把调用模板填入输入框', async () => {
@@ -218,7 +242,7 @@ describe('McpAssistantPage', () => {
     await user.type(composer, '查看待审批')
     await user.click(screen.getByRole('button', { name: /发送指令/ }))
     expect(await screen.findByText(/正在返回的第一段/)).toBeInTheDocument()
-    expect(screen.getByText('Agent 正在处理')).toBeInTheDocument()
+    expect(screen.getByText('工作流处理中')).toBeInTheDocument()
     rejectStream(new Error('连接中断'))
     expect(await screen.findByRole('alert')).toHaveTextContent('连接中断')
     expect(screen.getByText('正在返回的第一段')).toBeInTheDocument()

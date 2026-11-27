@@ -20,7 +20,7 @@ class KnowledgeCandidate(BaseModel):
     title: str = Field(default="", max_length=500)
     content: str = Field(min_length=1, max_length=20000)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    vector_score: float | None = Field(default=None, ge=-1.0, le=1.0, validation_alias=AliasChoices("vector_score", "vectorScore"))
+    vector_score: float | None = Field(default=None, ge=-1.05, le=1.05, validation_alias=AliasChoices("vector_score", "vectorScore"))
     vector_rank: int | None = Field(default=None, ge=1, validation_alias=AliasChoices("vector_rank", "vectorRank"))
     lexical_rank: int | None = Field(default=None, ge=1, validation_alias=AliasChoices("lexical_rank", "lexicalRank"))
 
