@@ -15,22 +15,28 @@ import {
 
 const toolGuides: AssistantToolGuide[] = [
   {
+    tool: 'knowledge.query',
+    label: '查询企业知识库',
+    say: '查知识库：大客户申请折扣优惠有哪些要求和审批流程？',
+    result: '结合语义向量与关键词检索企业知识库并返回引用',
+  },
+  {
     tool: 'customer.create',
     label: '新增客户',
     say: '新增客户：沐光医疗，行业：医疗科技，联系人：苏恬，电话：13800000007',
     result: '创建客户主档和主要联系人',
   },
   {
-    tool: 'interaction.chat_import + agent.sales_follow_up.run',
-    label: '导入聊天并分析跟进',
+    tool: 'interaction.chat_import',
+    label: '保存客户聊天',
     say: '给云岚科技导入聊天：客户说下周想看报价，需要私有化方案。',
-    result: '保存聊天记录，并只针对该客户运行跟进建议 Agent',
+    result: '将聊天记录归档至客户互动时间线（不触发自主 Agent）',
   },
   {
     tool: 'approval.list / approval.approve',
     label: '查询与处理审批',
     say: '查看待审批；批准 <审批ID>',
-    result: '查询或批准 Agent 生成的待审批建议',
+    result: '查询或批准业务待审批事项',
   },
   {
     tool: 'follow_up.list',
@@ -43,19 +49,19 @@ const toolGuides: AssistantToolGuide[] = [
 const welcomeMessage: ChatMessage = {
   id: 'welcome',
   role: 'assistant',
-  content: '我是 MCP 轻辅助助手。你可以直接说“新增客户”“给某客户导入聊天并跑 Agent”，我会自动调用客户、互动、Agent、审批和跟进工具。聊天记录会保存到数据库，刷新页面也能找回来。',
-  reasoningSummary: '等待用户输入业务指令。',
+  content: '我是 MCP 轻辅助助手，专注于日常问答、企业知识库查询以及标准业务工作流（新增客户、记录聊天、查看待审批与跟进任务、准备方案邮件）。如需多步自主分析或客户跟进 Agent，请从顶部栏切换至「自主 Agent」工作空间。',
+  reasoningSummary: '等待用户输入问答或标准工作流指令。',
   createdAt: new Date().toISOString(),
 }
 
 const guestDemoMessages: ChatMessage[] = [
-  { id: 'demo-user', role: 'user', content: '查看云岚科技的下一步跟进建议', createdAt: new Date().toISOString() },
+  { id: 'demo-user', role: 'user', content: '查知识库：报价折扣需要谁审批？', createdAt: new Date().toISOString() },
   {
     id: 'demo-assistant',
     role: 'assistant',
-    content: '演示结果：建议与云岚科技确认方案范围，并预约下一次评审。',
-    reasoningSummary: '根据模拟客户资料生成跟进建议。',
-    traces: [{ name: 'agent.sales_follow_up.run', status: 'SUCCEEDED', summary: '演示：已生成跟进建议' }],
+    content: '演示结果：发送正式报价前需销售经理审批；低于标准价格九折时，还需销售总监审批。',
+    reasoningSummary: '根据模拟企业知识库返回审批流程说明。',
+    traces: [{ name: 'knowledge.query', status: 'SUCCEEDED', summary: '演示：已找到并引用 1 段相关资料' }],
     createdAt: new Date().toISOString(),
   },
 ]
@@ -129,11 +135,11 @@ export function McpAssistantPage() {
             session={chat}
             guides={toolGuides}
             guidesAriaLabel="快捷操作"
-            emptyTitle="销售自动化助手"
-            emptyIntro="把客户资料、聊天记录、跟进建议和审批动作放在同一个工作流里，帮助销售团队更快整理线索、沉淀过程，并把需要人工确认的动作留在可追踪的记录中。"
+            emptyTitle="MCP 业务助手"
+            emptyIntro="聚焦日常问答、企业知识库检索与标准业务工作流（新增客户、保存聊天记录、审批与跟进查询）。如需多步自主规划或运行客户分析 Agent，请从顶部栏切换至「自主 Agent」。"
             loadingHistoryTitle="正在加载历史消息"
             attachmentAriaLabel="选择 MCP 聊天附件"
-            placeholder={chat.isGuest ? '游客模式不能执行自动化操作' : chat.quotaUnavailable ? '尚未分配 Token 额度，请联系管理员' : '例如：给云岚科技导入聊天。输入消息，按 Shift + Enter 换行，按 Enter 发送'}
+            placeholder={chat.isGuest ? '游客模式不能执行自动化操作' : chat.quotaUnavailable ? '尚未分配 Token 额度，请联系管理员' : '例如：查知识库或给云岚科技导入聊天。按 Enter 发送，Shift + Enter 换行'}
           />
         </section>
       </div>

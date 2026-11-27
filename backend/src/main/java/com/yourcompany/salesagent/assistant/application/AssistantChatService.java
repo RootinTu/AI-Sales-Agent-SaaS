@@ -89,11 +89,10 @@ public class AssistantChatService {
 	};
 	private static final List<Map<String, Object>> ASSISTANT_TOOLS = List.of(
 			assistantTool("customer.create", "新增客户和主要联系人。参数键：name、industry、employeeRange、website、contactName、contactEmail、contactPhone", "LOW", List.of("name")),
-			assistantTool("interaction.chat_import", "给客户导入聊天记录并运行跟进 Agent。参数键：customerName、chatContent、createCustomer", "LOW", List.of("customerName", "chatContent")),
+			assistantTool("interaction.chat_import", "给客户保存聊天记录（仅记录工作流，不触发自主 Agent）。参数键：customerName、chatContent、createCustomer", "LOW", List.of("customerName", "chatContent")),
 			assistantTool("email.send.prepare", "校验附件并创建待审批的客户邮件。参数键：customerName、documentType", "HIGH", List.of("customerName", "documentType")),
 			assistantTool("approval.list", "查看当前组织的待审批建议", "LOW", List.of()),
 			assistantTool("approval.approve", "批准指定审批并执行已批准动作。参数键：approvalId", "HIGH", List.of("approvalId")),
-			assistantTool("agent.sales_follow_up.run", "运行客户跟进分析 Agent。参数键：customerName，可省略", "LOW", List.of()),
 			assistantTool("follow_up.list", "查看跟进任务", "LOW", List.of()),
 			assistantTool("knowledge.query", "查询企业知识库，回答产品、定价、销售方法和流程制度问题，并引用资料。参数键：question", "LOW", List.of("question")));
 
@@ -274,12 +273,10 @@ public class AssistantChatService {
 				data.putAll(attachments.data());
 			}
 			var history = "AGENT".equals(mode) ? loadConversationHistory(principal, conversationId, message) : List.<Map<String, Object>>of();
-			events.accept("progress", Map.of("text", "AGENT".equals(mode)
-					? "自主 Agent 已启动：正在结合上下文记忆规划多步检索与执行…"
-					: "正在识别业务指令并执行工具；分析客户时需要等待模型返回。"));
+			events.accept("progress", Map.of("text", initialProgressText(mode, message)));
 			var result = "AGENT".equals(mode)
 					? routeAgent(principal, conversationId, message.strip(), traces, attachments, history, events)
-					: route(principal, conversationId, message.strip(), traces, attachments);
+					: route(principal, conversationId, message.strip(), traces, attachments, events);
 			summary = result.reasoningSummary();
 			data.putAll(result.data());
 			data.put("assistantMode", mode);
@@ -299,7 +296,9 @@ public class AssistantChatService {
 				var streamUsage = new AtomicReference<ModelUsage>();
 				var providerRequestId = new AtomicReference<String>();
 				var responseModel = new AtomicReference<String>();
-				events.accept("progress", Map.of("text", "业务执行已结束，模型正在生成回答。"));
+				events.accept("progress", Map.of("text", "AGENT".equals(mode)
+						? "多步检索与业务执行已完成，正在汇总分析结论…"
+						: "工作流处理完成，正在整理清晰回复…"));
 				var replyFlux = "AGENT".equals(mode)
 						? modelClient.streamAssistantReplyWithUsage(configuration, message, verifiedResult, mode, history)
 						: modelClient.streamAssistantReplyWithUsage(configuration, message, verifiedResult);
@@ -459,8 +458,20 @@ public class AssistantChatService {
 	}
 
 	private AssistantChatResponse route(AuthPrincipal principal, UUID conversationId, String message, List<AssistantToolTrace> traces, AttachmentContext attachments) {
+		return route(principal, conversationId, message, traces, attachments, (event, payload) -> {});
+	}
+
+	private AssistantChatResponse route(AuthPrincipal principal, UUID conversationId, String message, List<AssistantToolTrace> traces, AttachmentContext attachments, BiConsumer<String, Object> events) {
 		if (isHelpRequest(message)) {
 			return help(traces);
+		}
+		if (isAgentOnlyRequest(message)) {
+			traces.add(new AssistantToolTrace("assistant.router", "SKIPPED", "MCP 助手不支持自主 Agent 功能"));
+			return reply(
+					"MCP 助手仅支持日常问答、企业知识库查询和标准业务工作流（新增客户、记录聊天、查看/处理审批、查看跟进任务、准备方案附件邮件），不支持运行自主 Agent。\n\n如需多步自主分析或运行客户跟进 Agent，请点击顶部工作台切换至 **自主 Agent** 空间。",
+					"当前为 MCP 轻辅助模式，已阻止自主 Agent 调用并引导切换至自主 Agent 空间。",
+					traces,
+					Map.of("intent", "HELP", "agentModeRestricted", true));
 		}
 		com.yourcompany.salesagent.ai.application.AiModelRuntimeConfiguration configuration;
 		try {
@@ -498,16 +509,22 @@ public class AssistantChatService {
 		var arguments = plan.arguments();
 		var toolName = plan.toolName() == null ? "" : plan.toolName();
 		if ("KNOWLEDGE_QUERY".equals(plan.intent()) && toolName.isBlank()) toolName = "knowledge.query";
+		if (StringUtils.hasText(toolName)) {
+			events.accept("progress", Map.of("text", toolProgressText("LIGHT", toolName, 0)));
+		}
 		AssistantChatResponse result = switch (toolName) {
 			case "customer.create" -> createCustomer(principal, customerDraft(arguments), traces);
-			case "interaction.chat_import" -> importChatAndRunAgent(
-					principal, conversationId, importCommand(arguments), traces, attachments);
+			case "interaction.chat_import" -> importChatOnly(
+					principal, importCommand(arguments), traces);
 			case "email.send.prepare" -> proposeDocumentEmail(
 					principal, conversationId, documentSendCommand(arguments), traces, attachments);
 			case "approval.list" -> listPendingApprovals(principal, traces);
 			case "approval.approve" -> approvePlanned(principal, message, stringArgument(arguments, "approvalId"), traces);
-			case "agent.sales_follow_up.run" -> runAgent(
-					principal, conversationId, stringArgument(arguments, "customerName"), traces, attachments);
+			case "agent.sales_follow_up.run" -> reply(
+					"MCP 助手仅支持简单问答与标准工作流，不能直接触发跟进 Agent。请通过顶部栏切换至 **自主 Agent** 空间执行客户深度分析。",
+					"已拦截 MCP 助手中的 Agent 运行请求。",
+					traces,
+					Map.of("intent", "HELP", "agentModeRestricted", true));
 			case "follow_up.list" -> listFollowUps(principal, traces);
 			case "knowledge.query" -> queryKnowledge(principal, stringArgument(arguments, "question"), message, traces);
 			case "" -> reply(
@@ -609,6 +626,7 @@ public class AssistantChatService {
 			}
 
 			traces.add(new AssistantToolTrace(toolName, "RUNNING", "正在执行 " + toolName));
+			events.accept("progress", Map.of("text", toolProgressText("AGENT", toolName, step)));
 			AgentToolOutcome outcome;
 			try {
 				outcome = executeAgentTool(principal, conversationId, message, toolName, arguments, attachments, traces);
@@ -735,6 +753,26 @@ public class AssistantChatService {
 						"to", proposal.to(),
 						"subject", proposal.subject(),
 						"attachments", attachments.preview()));
+	}
+
+	private AssistantChatResponse importChatOnly(AuthPrincipal principal, ImportCommand command, List<AssistantToolTrace> traces) {
+		if (command == null || !StringUtils.hasText(command.customerName()) || !StringUtils.hasText(command.content())) {
+			return reply("我还缺客户名或聊天内容。可以这样发：\n\n给云岚科技导入聊天：客户说下周想看报价，需要私有化方案。", "识别为聊天导入意图，但缺少客户名或聊天正文，因此没有调用业务写入工具。", traces, Map.of("intent", "CHAT_IMPORT"));
+		}
+		var customer = resolveOrCreateCustomer(principal, command.customerName(), command.createCustomer(), traces);
+		traces.add(new AssistantToolTrace("interaction.chat_import", "RUNNING", "正在保存聊天记录"));
+		var interaction = interactionService.importChat(
+				principal, customer.id(),
+				new ChatImportRequest(ChatPlatform.OTHER, clock.instant(), "MCP 助手导入聊天", command.content().strip(), null));
+		traces.add(new AssistantToolTrace("interaction.chat_import", "SUCCEEDED", "已导入聊天记录：" + interaction.id()));
+		return reply(
+				"已将聊天记录保存到客户「" + customer.name() + "」的互动时间线中。\n\n如需进一步运行自主跟进分析 Agent 并生成个性化邮件建议，请点击顶部栏切换至 **自主 Agent** 工作空间。",
+				"识别聊天导入工作流 → 匹配或创建客户 → 写入互动记录（轻辅助模式不自动触发 Agent）。",
+				traces,
+				Map.of(
+						"customerId", customer.id(),
+						"customerName", customer.name(),
+						"interactionId", interaction.id()));
 	}
 
 	private AssistantChatResponse importChatAndRunAgent(AuthPrincipal principal, UUID conversationId, ImportCommand command, List<AssistantToolTrace> traces, AttachmentContext attachments) {
@@ -871,37 +909,87 @@ public class AssistantChatService {
 	}
 
 	private AssistantChatResponse help(List<AssistantToolTrace> traces) {
-		traces.add(new AssistantToolTrace("assistant.router", "SUCCEEDED", "已返回可用自动化指令"));
+		traces.add(new AssistantToolTrace("assistant.router", "SUCCEEDED", "已返回可用问答与工作流说明"));
 		return reply("""
-				我现在可以帮你自动化这些事：
+				我现在处于 **MCP 轻辅助模式**，支持以下日常问答与标准工作流：
 
-				1. 新增客户
-				示例：新增客户：沐光医疗，行业：医疗科技，联系人：苏恬，电话：13800000007，邮箱：su@example.com
+				1. **企业知识库问答**
+				   示例：`查知识库：发送报价前需要哪些审批？`
+				2. **新增客户档案**
+				   示例：`新增客户：沐光医疗，行业：医疗科技，联系人：苏恬，电话：13800000007`
+				3. **保存客户聊天记录**
+				   示例：`给云岚科技导入聊天：客户说下周想看报价，需要私有化方案。`
+				4. **查看与处理待审批**
+				   示例：`查看待审批` / `批准 <审批ID>`
+				5. **查看跟进任务**
+				   示例：`查看跟进任务`
+				6. **准备带附件的方案/报价邮件（提交审批）**
+				   示例：选择文件后输入 `给和成科技发送方案`
 
-				2. 新增客户、导入聊天并自动跑 Agent
-				示例：新增客户云岚科技并导入聊天：客户说下周想看报价，需要私有化方案。
+				> 如需多步自主调研、运行客户跟进分析 Agent 或跨模块生成定制邮件，请点击顶部栏切换至 **自主 Agent** 工作空间。
+				""", "没有匹配到明确业务指令，因此返回当前支持的问答与工作流说明。", traces, Map.of("intent", "HELP"));
+	}
 
-				3. 给已有客户导入聊天并自动跑 Agent
-				示例：给云岚科技导入聊天：客户说下周想看报价，需要私有化方案。
+	private boolean isAgentOnlyRequest(String message) {
+		if (!StringUtils.hasText(message)) return false;
+		var normalized = message.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+		return normalized.contains("运行agent")
+				|| normalized.contains("跑agent")
+				|| normalized.contains("启动agent")
+				|| normalized.contains("自主agent")
+				|| normalized.contains("跟进建议agent")
+				|| normalized.contains("跟进分析agent")
+				|| normalized.contains("agent分析");
+	}
 
-				4. 直接运行客户跟进 Agent
-				示例：运行 Agent 分析云岚科技
+	private String initialProgressText(String mode, String message) {
+		var text = message == null ? "" : message;
+		if ("AGENT".equals(mode)) {
+			if (text.contains("邮件") || text.contains("起草") || text.contains("发送")) {
+				return "自主 Agent 已启动：正在梳理客户背景、商机与知识库政策，准备起草邮件…";
+			}
+			if (text.contains("商机") || text.contains("报价") || text.contains("客户")) {
+				return "自主 Agent 已启动：正在读取上下文记忆并规划跨模块 CRM 检索步骤…";
+			}
+			return "自主 Agent 已启动：正在结合历史记忆拆解任务并规划多步执行…";
+		}
+		if (text.contains("审批")) {
+			return "正在识别审批工作流指令，准备读取或处理审批单…";
+		}
+		if (text.contains("跟进") || text.contains("任务")) {
+			return "正在识别任务工作流指令，准备查询开放中的跟进任务…";
+		}
+		if (text.contains("新增客户") || text.contains("导入聊天") || text.contains("发送方案") || text.contains("发送报价")) {
+			return "正在解析工作流参数并校验目标客户信息…";
+		}
+		if (text.contains("知识库") || text.contains("政策") || text.contains("折扣") || text.contains("打折") || text.contains("制度") || text.contains("流程") || text.contains("怎么") || text.contains("如何")) {
+			return "正在理解问题并准备检索企业知识库语义索引…";
+		}
+		return "正在理解你的需求并匹配对应问答或工作流…";
+	}
 
-				5. 查看待审批建议
-				示例：查看待审批
-
-				6. 显式批准某条审批
-				示例：批准 <审批ID>
-
-				7. 查看跟进任务
-				示例：查看跟进任务
-
-				8. 给客户发送方案、报价或合同附件
-				示例：选择文件后输入：给和成科技发送方案
-
-				9. 查询企业知识库
-				示例：查知识库：发送报价前需要哪些审批？
-				""", "没有匹配到明确业务指令，因此返回当前支持的工具调用方式和示例。", traces, Map.of("intent", "HELP"));
+	private String toolProgressText(String mode, String toolName, int step) {
+		var prefix = "AGENT".equals(mode) && step > 0 ? "第 " + step + " 步执行：" : "";
+		return switch (toolName) {
+			case "knowledge.query" -> prefix + "正在执行向量语义与关键词混合检索，查找企业知识库资料…";
+			case "customer.search" -> prefix + "正在按关键词搜索客户档案…";
+			case "customer.detail" -> prefix + "正在读取客户全景档案、联系人与商机摘要…";
+			case "customer.create" -> prefix + "正在校验字段并创建客户档案…";
+			case "interaction.list" -> prefix + "正在查阅客户近期沟通记录…";
+			case "interaction.chat_import" -> prefix + "正在保存客户聊天记录到互动时间线…";
+			case "opportunity.list" -> prefix + "正在检索关联商机阶段与金额…";
+			case "opportunity.create" -> prefix + "正在创建新的销售商机…";
+			case "quote.list" -> prefix + "正在查阅客户历史报价单…";
+			case "mail.list" -> prefix + "正在检索客户往来邮件记录…";
+			case "follow_up.list" -> prefix + "正在读取开放中的跟进任务…";
+			case "follow_up.create" -> prefix + "正在创建客户跟进任务…";
+			case "approval.list" -> prefix + "正在读取当前待审批事项…";
+			case "approval.approve" -> prefix + "正在校验审批状态并执行批准动作…";
+			case "email.send.prepare" -> prefix + "正在校验附件并生成待审批方案邮件…";
+			case "email.draft.intelligent" -> prefix + "正在结合客户痛点与政策起草定制待审批邮件…";
+			case "agent.sales_follow_up.run" -> prefix + "正在运行客户跟进分析 Agent 并生成跟进建议…";
+			default -> prefix + "正在执行业务工具 " + toolName + "…";
+		};
 	}
 
 	private boolean isHelpRequest(String message) {

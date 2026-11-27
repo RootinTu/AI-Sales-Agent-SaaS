@@ -26,13 +26,18 @@ def _terms(value: str) -> set[str]:
     return set(search_terms(value))
 
 
-MIN_VECTOR_SCORE = 0.25
+MIN_VECTOR_SCORE = 0.38
+MAX_VECTOR_SCORE_GAP = 0.22
 RRF_K = 60.0
 
 
 def rank_candidates(query: str, candidates: list[KnowledgeCandidate], top_k: int) -> list[KnowledgeSource]:
     query_terms = _terms(query)
     has_vector = any(candidate.vector_score is not None for candidate in candidates)
+    best_vector_score = max(
+        (float(candidate.vector_score) for candidate in candidates if candidate.vector_score is not None),
+        default=0.0,
+    )
     ranked: list[KnowledgeSource] = []
     for candidate in candidates:
         candidate_terms = _terms(candidate.title + candidate.content)
@@ -41,6 +46,8 @@ def rank_candidates(query: str, candidates: list[KnowledgeCandidate], top_k: int
         if has_vector:
             vector_score = max(0.0, float(candidate.vector_score)) if candidate.vector_score is not None else 0.0
             if lexical_score <= 0 and vector_score < MIN_VECTOR_SCORE:
+                continue
+            if lexical_score <= 0 and best_vector_score >= MIN_VECTOR_SCORE and (best_vector_score - vector_score) > MAX_VECTOR_SCORE_GAP:
                 continue
             rrf_bonus = 0.0
             if candidate.vector_rank is not None:
