@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getAgentRuns, getAgentRunSteps } from '../api/agent-runs-api'
-import { getAiModelStatus } from '../api/ai-settings-api'
+import { calibrateAgentAfp, getAiModelStatus } from '../api/ai-settings-api'
 import { getMcpCapabilities, getMcpConversations, getMcpMessages, isDesktopClient, streamMcpChatMessage } from '../api/mcp-chat-api'
 import { AgentWorkspacePage } from './AgentWorkspacePage'
 
@@ -24,6 +24,7 @@ vi.mock('../api/mcp-chat-api', () => ({
 
 vi.mock('../api/ai-settings-api', () => ({
   getAiModelStatus: vi.fn(),
+  calibrateAgentAfp: vi.fn(),
 }))
 
 vi.mock('../api/agent-runs-api', () => ({
@@ -303,15 +304,76 @@ describe('AgentWorkspacePage', () => {
     expect(await screen.findByLabelText('自主 Agent 用量统计')).toBeInTheDocument()
     expect(screen.getByText('独立通道已就绪')).toBeInTheDocument()
     expect(screen.getByLabelText('Agent 燃料值 AFP 估算')).toBeInTheDocument()
+    vi.mocked(calibrateAgentAfp).mockResolvedValue({
+      provider: 'QWEN',
+      model: 'qwen4-max',
+      embeddingModel: 'qwen3.7-text-embedding-flash',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      apiKeyConfigured: true,
+      ready: true,
+      status: 'READY',
+      agent: {
+        enabled: true,
+        provider: 'VOLCENGINE_ARK',
+        model: 'doubao-seed-2.1-pro',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
+        apiKeyConfigured: true,
+        ready: true,
+        status: 'READY',
+        availableModels: ['doubao-seed-2.0-mini', 'doubao-seed-2.1-lite', 'doubao-seed-2.1-pro', 'deepseek-v4-pro', 'kimi-k3.1-pro'],
+      },
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedInputTokens: 0,
+        totalTokens: 150,
+        successfulCalls: 3,
+        lastCalledAt: '2026-11-18T08:00:00Z',
+        remainingTokens: null,
+        remainingStatus: 'CHAT_API_DOES_NOT_RETURN_ACCOUNT_REMAINING',
+        memberAllocatedTokens: 0,
+        memberUsedTokens: 0,
+        memberRemainingTokens: 0,
+        agent: {
+          inputTokens: 1200,
+          outputTokens: 800,
+          cachedInputTokens: 0,
+          totalTokens: 2000,
+          successfulCalls: 6,
+          lastCalledAt: '2026-11-18T09:00:00Z',
+          totalEstimatedAfp: 95,
+          last5HoursAfp: 95,
+          last7DaysAfp: 95,
+          last30DaysAfp: 95,
+          fiveHourAfpLimit: 2000,
+          weeklyAfpLimit: 7000,
+          monthlyAfpLimit: 20000,
+          calibratedAt: '2026-11-18T09:10:00Z',
+          models: [],
+        },
+      },
+    })
     await user.click(screen.getByRole('button', { name: '查看完整看板' }))
     expect(await screen.findByRole('heading', { name: 'Agent 通道与燃料值（AFP）看板' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '校准控制台 AFP' }))
+    const calInput = screen.getByLabelText('近 5 小时已用 AFP')
+    await user.clear(calInput)
+    await user.type(calInput, '95')
+    await user.click(screen.getByRole('button', { name: '保存校准' }))
+    await waitFor(() => expect(calibrateAgentAfp).toHaveBeenCalledWith(
+      expect.objectContaining({ fiveHourUsedAfp: 95 }),
+      expect.anything(),
+    ))
     await user.click(screen.getByRole('button', { name: '回到自主对话' }))
 
-    // 左下角一键选模型：按极速/标准/进阶分组展示，切换到 deepseek-v4-pro
+    // 左下角一键选模型：左右分栏，左侧切换分类、右侧选择模型
     await user.click(screen.getByRole('button', { name: '选择 Agent 模型' }))
-    expect(screen.getByText('文本生成（极速）')).toBeInTheDocument()
-    expect(screen.getByText('文本生成（标准）')).toBeInTheDocument()
-    expect(screen.getByText('文本生成（进阶）')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /文本生成（极速）/ })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /文本生成（标准）/ })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /文本生成（进阶）/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /文本生成（极速）/ }))
+    expect(screen.getByRole('option', { name: /doubao-seed-2\.0-mini/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /文本生成（进阶）/ }))
     await user.click(screen.getByRole('option', { name: /deepseek-v4-pro/ }))
 
     // 切换到「存本地」会话存储模式

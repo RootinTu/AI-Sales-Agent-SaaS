@@ -60,6 +60,16 @@ public class AiModelController {
 		return modelService.testAgentConnection(organizationId(authentication));
 	}
 
+	@PutMapping("/agent/afp-calibration")
+	public AiModelStatusResponse calibrateAgentAfp(
+			Authentication authentication,
+			@Valid @RequestBody AiAgentAfpCalibrationRequest request) {
+		UUID memberId = authentication != null && authentication.getPrincipal() instanceof AuthPrincipal principal
+				? principal.memberId()
+				: null;
+		return modelService.calibrateAgentAfp(organizationId(authentication), memberId, request);
+	}
+
 	private UUID organizationId(Authentication authentication) {
 		return authentication != null && authentication.getPrincipal() instanceof AuthPrincipal principal
 				? principal.organizationId()

@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import com.yourcompany.salesagent.ai.api.AiAgentAfpCalibrationRequest;
 import com.yourcompany.salesagent.ai.api.AiAgentModelStatusResponse;
 import com.yourcompany.salesagent.ai.api.AiModelStatusResponse;
 import com.yourcompany.salesagent.ai.api.AiModelTestResponse;
@@ -126,7 +127,7 @@ public class AiModelService {
 					false,
 					false,
 					"MISSING_API_KEY",
-					usageSummary(organizationId, memberId),
+					usageSummary(organizationId, memberId, null),
 					defaultAgentStatus());
 		}
 		var ready = canDecrypt(organizationId, configuration.getEncryptedApiKey());
@@ -138,8 +139,39 @@ public class AiModelService {
 				true,
 				ready,
 				ready ? "READY" : "ENCRYPTION_KEY_UNAVAILABLE",
-				usageSummary(organizationId, memberId),
+				usageSummary(organizationId, memberId, configuration),
 				agentStatus(organizationId, configuration));
+	}
+
+	/**
+	 * 校准自主 Agent 通道的方舟控制台已用 AFP 基线（用于同步历史或站外调用消耗）。
+	 * 保存校准时间点后，系统自动以「校准基线 + 校准后本系统新增 AFP」计算周期用量，不重复计入。
+	 */
+	@Transactional
+	public AiModelStatusResponse calibrateAgentAfp(UUID organizationId, UUID memberId, AiAgentAfpCalibrationRequest request) {
+		var configuration = configurationMapper.selectById(organizationId);
+		if (configuration == null) {
+			throw new AiModelNotConfiguredException("请先在设置中配置并保存 AI 模型后再校准 AFP 用量。");
+		}
+		var now = clock.instant();
+		var fiveHour = normalizeAfp(request.fiveHourUsedAfp());
+		var weekly = normalizeAfp(request.weeklyUsedAfp());
+		var monthly = normalizeAfp(request.monthlyUsedAfp());
+		if (fiveHour == null && weekly == null && monthly == null) {
+			configuration.updateAgentAfpCalibration(null, null, null, null, now);
+		}
+		else {
+			var resolved5h = fiveHour != null ? fiveHour : BigDecimal.ZERO;
+			var resolved7d = weekly != null ? weekly.max(resolved5h) : resolved5h;
+			var resolved30d = monthly != null ? monthly.max(resolved7d) : resolved7d;
+			configuration.updateAgentAfpCalibration(resolved5h, resolved7d, resolved30d, now, now);
+		}
+		configurationMapper.updateById(configuration);
+		return status(organizationId, memberId);
+	}
+
+	private static BigDecimal normalizeAfp(BigDecimal value) {
+		return value == null ? null : value.setScale(3, RoundingMode.HALF_UP);
 	}
 
 	@Transactional
@@ -518,7 +550,7 @@ public class AiModelService {
 		}
 	}
 
-	private AiModelUsageResponse usageSummary(UUID organizationId, UUID memberId) {
+	private AiModelUsageResponse usageSummary(UUID organizationId, UUID memberId, AiModelConfiguration configuration) {
 		ModelUsageSummaryRow summary = modelCallMapper.selectAllUsageSummary(organizationId);
 		ModelUsageSummaryRow embeddingSummary = modelCallMapper.selectEmbeddingUsageSummary(organizationId);
 		ModelUsageSummaryRow agentSummary = modelCallMapper.selectAgentUsageSummary(organizationId);
@@ -536,10 +568,32 @@ public class AiModelService {
 		var agentOutputTokens = agentSummary == null ? 0L : agentSummary.getOutputTokens();
 		var agentCachedInputTokens = agentSummary == null ? 0L : agentSummary.getCachedInputTokens();
 		var now = clock.instant();
-		var totalEstimatedAfp = sumEstimatedAfp(agentModelItems);
-		var last5HoursAfp = sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, now.minus(Duration.ofHours(5))));
-		var last7DaysAfp = sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, now.minus(Duration.ofDays(7))));
-		var last30DaysAfp = sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, now.minus(Duration.ofDays(30))));
+		var allTimeDbAfp = sumEstimatedAfp(agentModelItems);
+		var calibratedAt = configuration == null ? null : configuration.getAgentAfpCalibratedAt();
+		var sinceCalibratedAfp = calibratedAt != null
+				? sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, calibratedAt))
+				: 0.0;
+		var last5HoursAfp = resolveWindowAfp(
+				organizationId,
+				now.minus(Duration.ofHours(5)),
+				calibratedAt,
+				configuration == null ? null : configuration.getAgentAfpBaseline5h(),
+				sinceCalibratedAfp);
+		var last7DaysAfp = resolveWindowAfp(
+				organizationId,
+				now.minus(Duration.ofDays(7)),
+				calibratedAt,
+				configuration == null ? null : configuration.getAgentAfpBaseline7d(),
+				sinceCalibratedAfp);
+		var last30DaysAfp = resolveWindowAfp(
+				organizationId,
+				now.minus(Duration.ofDays(30)),
+				calibratedAt,
+				configuration == null ? null : configuration.getAgentAfpBaseline30d(),
+				sinceCalibratedAfp);
+		var totalEstimatedAfp = calibratedAt != null && configuration.getAgentAfpBaseline30d() != null
+				? roundAfp(Math.max(allTimeDbAfp, configuration.getAgentAfpBaseline30d().doubleValue() + sinceCalibratedAfp))
+				: allTimeDbAfp;
 		var agentUsage = new AiModelUsageResponse.AgentUsageSummary(
 				agentInputTokens,
 				agentOutputTokens,
@@ -554,7 +608,8 @@ public class AiModelService {
 				last30DaysAfp,
 				DEFAULT_AGENT_5H_AFP_LIMIT,
 				DEFAULT_AGENT_7D_AFP_LIMIT,
-				DEFAULT_AGENT_30D_AFP_LIMIT);
+				DEFAULT_AGENT_30D_AFP_LIMIT,
+				calibratedAt);
 		return new AiModelUsageResponse(
 				inputTokens,
 				outputTokens,
@@ -657,6 +712,18 @@ public class AiModelService {
 			}
 		}
 		return roundAfp(total);
+	}
+
+	private double resolveWindowAfp(
+			UUID organizationId,
+			java.time.Instant windowStart,
+			java.time.Instant calibratedAt,
+			BigDecimal baseline,
+			double sinceCalibratedAfp) {
+		if (calibratedAt != null && baseline != null && calibratedAt.isAfter(windowStart)) {
+			return roundAfp(baseline.doubleValue() + sinceCalibratedAfp);
+		}
+		return sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, windowStart));
 	}
 
 	private static double roundAfp(double value) {

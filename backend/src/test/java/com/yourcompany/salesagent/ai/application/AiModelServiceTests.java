@@ -326,4 +326,51 @@ class AiModelServiceTests {
 				.doesNotContain("kimi-k3")
 				.contains("doubao-seed-2.0-mini", "doubao-seed-2.1-lite", "doubao-seed-2.1-pro", "kimi-k3.1-pro", "glm-5.4");
 	}
+
+	@Test
+	void calibratesExternalAfpBaselineAndAddsSubsequentUsageWithoutDoubleCounting() {
+		var mapper = mock(AiModelConfigurationMapper.class);
+		var modelCallMapper = mock(ModelCallMapper.class);
+		var cipher = mock(SecretCipher.class);
+		var existing = AiModelConfiguration.create(
+				organizationId,
+				"QWEN",
+				"qwen4-max",
+				"qwen3.7-text-embedding-flash",
+				"https://dashscope.aliyuncs.com/compatible-mode/v1",
+				"enc-qwen",
+				clock.instant());
+		when(mapper.selectById(organizationId)).thenReturn(existing);
+		when(cipher.decrypt(organizationId, "enc-qwen")).thenReturn("sk-qwen");
+
+		var newCallRow = new ModelUsageBreakdownRow();
+		newCallRow.setProvider("VOLCENGINE_ARK");
+		newCallRow.setModel("doubao-seed-2.1-pro");
+		newCallRow.setInputTokens(10_000);
+		newCallRow.setOutputTokens(0);
+		newCallRow.setSuccessfulCalls(1);
+		when(modelCallMapper.selectAgentUsageByModelSince(organizationId, clock.instant()))
+				.thenReturn(List.of(newCallRow));
+
+		var service = new AiModelService(
+				mock(AiOrchestrationClient.class),
+				mapper,
+				modelCallMapper,
+				cipher,
+				new AiModelDefaultsProperties("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+				clock);
+
+		var calibrated = service.calibrateAgentAfp(
+				organizationId,
+				null,
+				new com.yourcompany.salesagent.ai.api.AiAgentAfpCalibrationRequest(
+						new java.math.BigDecimal("95"), null, null));
+
+		assertThat(calibrated.usage().agent().calibratedAt()).isEqualTo(clock.instant());
+		// 95 基线 + 10,000 * 2.5 / 10,000 (2.5 AFP) = 97.5 AFP
+		assertThat(calibrated.usage().agent().last5HoursAfp()).isEqualTo(97.5);
+		assertThat(calibrated.usage().agent().last7DaysAfp()).isEqualTo(97.5);
+		assertThat(calibrated.usage().agent().last30DaysAfp()).isEqualTo(97.5);
+		assertThat(calibrated.usage().agent().totalEstimatedAfp()).isEqualTo(97.5);
+	}
 }
