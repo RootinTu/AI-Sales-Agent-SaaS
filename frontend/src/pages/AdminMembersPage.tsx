@@ -113,8 +113,9 @@ export function AdminMembersPage() {
                     <td><span className={`member-status status-${member.status.toLowerCase()}`}><i />{statusLabels[member.status]}</span></td>
                     <td>
                       <div className="admin-token-cell">
-                        <strong>{member.allocatedTokens == null ? '未分配' : formatCompactNumber(member.allocatedTokens)}</strong>
+                        <strong>普通：{member.allocatedTokens == null ? '未分配' : formatCompactNumber(member.allocatedTokens)}</strong>
                         <small>已用 {formatCompactNumber(member.usedTokens)}{member.remainingTokens != null ? ` · 剩 ${formatCompactNumber(member.remainingTokens)}` : ''}</small>
+                        <small>向量：{member.embeddingAllocatedTokens == null ? '未单独设限' : `${formatCompactNumber(member.embeddingUsedTokens ?? 0)} / ${formatCompactNumber(member.embeddingAllocatedTokens)}`}</small>
                       </div>
                     </td>
                     <td>{formatDate(member.lastLoginAt)}</td>
@@ -176,6 +177,9 @@ function MemberEditor({
   const [status, setStatus] = useState<MemberStatus>(member?.status ?? 'ACTIVE')
   const [initialPassword, setInitialPassword] = useState('')
   const [quotaInput, setQuotaInput] = useState(member?.allocatedTokens == null ? '' : String(member.allocatedTokens))
+  const [embeddingQuotaInput, setEmbeddingQuotaInput] = useState(
+    member?.embeddingAllocatedTokens == null ? '' : String(member.embeddingAllocatedTokens),
+  )
   const [newPassword, setNewPassword] = useState('')
   const [securityMessage, setSecurityMessage] = useState('')
 
@@ -186,6 +190,13 @@ function MemberEditor({
     || !Number.isSafeInteger(Number(quotaInput))
     || Number(quotaInput) > 1_000_000_000_000
     || Number(quotaInput) > maxForMember
+  )
+  const maxEmbeddingForMember = (budget?.embeddingUnallocatedTokens ?? 0) + (member?.embeddingAllocatedTokens ?? 0)
+  const embeddingQuotaInvalid = embeddingQuotaInput.trim() !== '' && (
+    !/^\d+$/.test(embeddingQuotaInput.trim())
+    || !Number.isSafeInteger(Number(embeddingQuotaInput))
+    || Number(embeddingQuotaInput) > 1_000_000_000_000
+    || Number(embeddingQuotaInput) > maxEmbeddingForMember
   )
 
   const roleOptions = useMemo(() => [
@@ -208,6 +219,19 @@ function MemberEditor({
 
   const quotaMutation = useMutation({
     mutationFn: () => updateMemberTokenQuota(member!.id, quotaInput.trim() === '' ? null : Number(quotaInput)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['admin-members'] })
+      await queryClient.invalidateQueries({ queryKey: ['team-token-budget'] })
+      await queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
+    },
+  })
+
+  const embeddingQuotaMutation = useMutation({
+    mutationFn: () => updateMemberTokenQuota(member!.id, {
+      embeddingAllocatedTokens: embeddingQuotaInput.trim() === '' ? null : Number(embeddingQuotaInput),
+      updateAllocatedQuota: false,
+      updateEmbeddingQuota: true,
+    }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['admin-members'] })
       await queryClient.invalidateQueries({ queryKey: ['team-token-budget'] })
@@ -264,7 +288,7 @@ function MemberEditor({
           <div className="admin-editor-sections">
             <section className="admin-security-box" aria-label="成员 AI Token 额度">
               <div className="admin-security-head">
-                <strong><Sparkle size={15} />AI Token 额度</strong>
+                <strong><Sparkle size={15} />普通模型 Token 额度</strong>
                 <small>{budget?.totalTokens == null ? '请先在团队管理设置总额' : `可分配上限 ${formatCompactNumber(maxForMember)}`}</small>
               </div>
               <div className="admin-inline-form">
@@ -285,7 +309,31 @@ function MemberEditor({
                 </button>
               </div>
               {quotaMutation.isError ? <p className="admin-form-error">{quotaMutation.error.message}</p> : null}
-              {quotaMutation.isSuccess ? <p className="admin-form-success">成员 Token 额度已更新。</p> : null}
+              {quotaMutation.isSuccess ? <p className="admin-form-success">成员普通模型 Token 额度已更新。</p> : null}
+
+              <div className="admin-security-head">
+                <strong><Sparkle size={15} />向量模型 Token 额度</strong>
+                <small>{budget?.embeddingTotalTokens == null ? '请先在团队管理设置向量总额' : `可分配上限 ${formatCompactNumber(maxEmbeddingForMember)}`}</small>
+              </div>
+              <div className="admin-inline-form">
+                <input
+                  aria-label="成员向量模型 Token 额度"
+                  inputMode="numeric"
+                  placeholder="留空表示未分配"
+                  value={embeddingQuotaInput}
+                  onChange={(event) => setEmbeddingQuotaInput(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={!budget || budget.embeddingTotalTokens == null || embeddingQuotaInvalid || embeddingQuotaMutation.isPending}
+                  onClick={() => embeddingQuotaMutation.mutate()}
+                >
+                  {embeddingQuotaMutation.isPending ? '保存中…' : '保存向量额度'}
+                </button>
+              </div>
+              {embeddingQuotaMutation.isError ? <p className="admin-form-error">{embeddingQuotaMutation.error.message}</p> : null}
+              {embeddingQuotaMutation.isSuccess ? <p className="admin-form-success">成员向量模型 Token 额度已更新。</p> : null}
             </section>
 
             {canManageAccount ? (

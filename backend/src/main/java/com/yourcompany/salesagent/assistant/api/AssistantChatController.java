@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.yourcompany.salesagent.assistant.application.AssistantStreamTransport;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -72,9 +73,18 @@ public class AssistantChatController {
 	@GetMapping("/conversations")
 	public PageResponse<AssistantConversationResponse> findConversations(
 			Authentication authentication,
+			@RequestParam(required = false) String mode,
 			@RequestParam(defaultValue = "0") @Min(0) int page,
 			@RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
-		return PageResponse.from(chatService.findConversations(principal(authentication), page, size));
+		return PageResponse.from(chatService.findConversations(principal(authentication), mode, page, size));
+	}
+
+	@DeleteMapping("/conversations/{conversationId}")
+	public ResponseEntity<Void> deleteConversation(
+			Authentication authentication,
+			@PathVariable UUID conversationId) {
+		chatService.deleteConversation(principal(authentication), conversationId);
+		return ResponseEntity.noContent().build();
 	}
 
 	@GetMapping("/conversations/{conversationId}/messages")

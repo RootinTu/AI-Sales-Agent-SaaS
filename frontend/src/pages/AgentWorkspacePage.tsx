@@ -1,23 +1,35 @@
 import {
   ArrowLeft,
   BookOpen,
+  CaretDown,
   ChatCircleDots,
+  Check,
   CheckCircle,
   Clock,
+  Cloud,
+  HardDrive,
   Lock,
   PlusSquare,
   Robot,
   ShieldCheck,
   Sparkle,
+  Trash,
   WarningCircle,
 } from '@phosphor-icons/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router'
 import { getAgentRuns, getAgentRunSteps, type AgentRunPage } from '../api/agent-runs-api'
+import { getAiModelStatus, type AiModelStatus } from '../api/ai-settings-api'
 import * as mcpChatApi from '../api/mcp-chat-api'
-import { isDesktopClient, type AssistantCapabilities } from '../api/mcp-chat-api'
+import { isDesktopClient, type AssistantCapabilities, type AssistantStorageMode } from '../api/mcp-chat-api'
 import { useAuth, useIsGuest } from '../auth/use-auth'
+import {
+  readPreferredAgentModel,
+  readPreferredAgentStorageMode,
+  savePreferredAgentModel,
+  savePreferredAgentStorageMode,
+} from '../components/assistant/agent-local-storage'
 import {
   formatTime,
   useAssistantChatSession,
@@ -25,9 +37,8 @@ import {
   type ChatMessage,
 } from '../components/assistant/assistant-session'
 import {
+  AgentUsagePanel,
   AssistantConversationPane,
-  ModelInfoPanel,
-  TokenAllocationDialog,
 } from '../components/assistant/AssistantWorkspaceParts'
 
 type AgentWorkspaceTab = 'chat' | 'runs' | 'tools'
@@ -98,7 +109,6 @@ export function AgentWorkspacePage() {
   const navigate = useNavigate()
   const desktopClient = isDesktopClient()
   const [activeTab, setActiveTab] = useState<AgentWorkspaceTab>('chat')
-  const [tokenAllocationOpen, setTokenAllocationOpen] = useState(false)
 
   const capabilitiesQuery = useQuery<AssistantCapabilities>({
     queryKey: ['mcp-capabilities', desktopClient],
@@ -143,43 +153,80 @@ export function AgentWorkspacePage() {
 
   return (
     <AgentAuthorizedWorkspace
-      role={session.role}
+      storageScope={`${session.organizationId || 'org'}:${session.memberId || 'member'}`}
       accessBadgeLabel={accessBadgeLabel}
       activeTab={activeTab}
       onChangeTab={setActiveTab}
-      tokenAllocationOpen={tokenAllocationOpen}
-      onOpenTokenAllocation={() => setTokenAllocationOpen(true)}
-      onCloseTokenAllocation={() => setTokenAllocationOpen(false)}
       onReturnBusiness={returnToBusinessWorkspace}
     />
   )
 }
 
 function AgentAuthorizedWorkspace({
-  role,
+  storageScope,
   accessBadgeLabel,
   activeTab,
   onChangeTab,
-  tokenAllocationOpen,
-  onOpenTokenAllocation,
-  onCloseTokenAllocation,
   onReturnBusiness,
 }: {
-  role: string
+  storageScope: string
   accessBadgeLabel: string
   activeTab: AgentWorkspaceTab
   onChangeTab: (tab: AgentWorkspaceTab) => void
-  tokenAllocationOpen: boolean
-  onOpenTokenAllocation: () => void
-  onCloseTokenAllocation: () => void
   onReturnBusiness: () => void
 }) {
+  const [storageMode, setStorageMode] = useState<AssistantStorageMode>(() => readPreferredAgentStorageMode(storageScope))
+  const [preferredModel, setPreferredModel] = useState<string>(() => readPreferredAgentModel(storageScope))
+
+  const modelStatusQuery = useQuery({
+    queryKey: ['ai-model-status'],
+    queryFn: getAiModelStatus,
+  })
+  const modelStatus = modelStatusQuery.data
+
+  const agentModels = useMemo(() => {
+    const agent = modelStatus?.agent
+    if (!agent?.enabled || !agent.ready) return []
+    const list = agent.availableModels && agent.availableModels.length > 0
+      ? agent.availableModels
+      : (agent.model ? [agent.model] : [])
+    return Array.from(new Set(list.filter(Boolean)))
+  }, [modelStatus])
+
+  const defaultMcpModel = modelStatus?.model ?? 'qwen4-max'
+  const effectiveModel = useMemo(() => {
+    if (preferredModel) {
+      if (agentModels.includes(preferredModel)) return preferredModel
+      if (preferredModel === defaultMcpModel) return preferredModel
+    }
+    if (agentModels.length > 0) return modelStatus?.agent?.model || agentModels[0]
+    return defaultMcpModel
+  }, [preferredModel, agentModels, defaultMcpModel, modelStatus?.agent?.model])
+
+  const usesIndependentChannel = Boolean(modelStatus?.agent?.enabled && modelStatus.agent.ready && agentModels.includes(effectiveModel))
+
   const chat = useAssistantChatSession({
     mode: 'AGENT',
     welcomeMessage: agentWelcomeMessage,
     guestDemoMessages: [],
     pendingProgressText: '自主 Agent 正在启动多步规划…',
+    selectedModel: effectiveModel,
+    usesIndependentChannel,
+    storageMode,
+    storageScope,
   })
+
+  function handleSelectModel(nextModel: string) {
+    setPreferredModel(nextModel)
+    savePreferredAgentModel(storageScope, nextModel)
+  }
+
+  function handleChangeStorageMode(nextMode: AssistantStorageMode) {
+    if (nextMode === storageMode || chat.isPending) return
+    setStorageMode(nextMode)
+    savePreferredAgentStorageMode(storageScope, nextMode)
+    chat.startNewConversation()
+  }
 
   return (
     <section className="agent-workspace-page">
@@ -222,39 +269,84 @@ function AgentAuthorizedWorkspace({
           </div>
 
           <div className="agent-ws-history">
-            <p className="agent-ws-section-label">最近 Agent 会话</p>
+            <div className="agent-ws-history-head">
+              <p className="agent-ws-section-label">Agent 会话</p>
+              <div className="agent-storage-switch" role="group" aria-label="Agent 会话存储方式">
+                <button
+                  type="button"
+                  aria-pressed={storageMode === 'LOCAL'}
+                  className={storageMode === 'LOCAL' ? 'is-active' : ''}
+                  disabled={chat.isPending}
+                  onClick={() => handleChangeStorageMode('LOCAL')}
+                >
+                  <HardDrive size={12} />
+                  <span>存本地</span>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={storageMode === 'CLOUD'}
+                  className={storageMode === 'CLOUD' ? 'is-active' : ''}
+                  disabled={chat.isPending}
+                  onClick={() => handleChangeStorageMode('CLOUD')}
+                >
+                  <Cloud size={12} />
+                  <span>存线上</span>
+                </button>
+              </div>
+            </div>
+            <p className="agent-storage-hint">
+              {storageMode === 'LOCAL'
+                ? '对话仅保存于当前设备本地，不写入云端会话表。'
+                : '对话云端独立保存，不与 MCP 共享且不自动过期。'}
+            </p>
             {chat.conversations.length === 0 ? (
               <div className="mcp-empty-history">
                 <Robot size={40} />
-                <p>{chat.conversationsQuery.isLoading ? '正在读取会话…' : '暂无历史会话'}</p>
+                <p>{storageMode === 'CLOUD' && chat.conversationsQuery.isLoading ? '正在读取云端会话…' : storageMode === 'LOCAL' ? '暂无本地会话' : '暂无云端会话'}</p>
               </div>
             ) : (
               <div className="mcp-history-list">
                 {chat.conversations.map((conversation) => (
-                  <button
+                  <div
                     key={conversation.id}
-                    type="button"
-                    className={conversation.id === chat.activeConversationId ? 'is-active' : ''}
-                    disabled={chat.isPending}
-                    onClick={() => {
-                      chat.selectConversation(conversation.id)
-                      onChangeTab('chat')
-                    }}
+                    className={`mcp-history-item-wrap${conversation.id === chat.activeConversationId ? ' is-active' : ''}`}
                   >
-                    <strong>{conversation.title}</strong>
-                    <span>{formatTime(conversation.lastMessageAt ?? conversation.createdAt)} · {conversation.channel}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className={conversation.id === chat.activeConversationId ? 'is-active' : ''}
+                      disabled={chat.isPending}
+                      onClick={() => {
+                        chat.selectConversation(conversation.id)
+                        onChangeTab('chat')
+                      }}
+                    >
+                      <strong>{conversation.title}</strong>
+                      <span>
+                        {formatTime(conversation.lastMessageAt ?? conversation.createdAt)} · {storageMode === 'LOCAL' ? '本地' : conversation.channel}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="mcp-history-delete"
+                      aria-label={`删除会话 ${conversation.title}`}
+                      title="删除会话"
+                      disabled={chat.isPending}
+                      onClick={() => void chat.deleteConversation(conversation.id)}
+                    >
+                      <Trash size={13} />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
           </div>
 
           <div className="agent-ws-sidebar-bottom">
-            <ModelInfoPanel
-              status={chat.modelQuery.data}
-              loading={chat.modelQuery.isLoading}
-              canAllocate={role === 'OWNER' || role === 'ADMIN'}
-              onAllocate={onOpenTokenAllocation}
+            <AgentUsagePanel
+              status={modelStatus}
+              loading={modelStatusQuery.isLoading}
+              activeModel={effectiveModel}
+              usesIndependentChannel={usesIndependentChannel}
             />
             <button type="button" className="agent-return-button" onClick={onReturnBusiness}>
               <ArrowLeft size={15} />
@@ -274,7 +366,14 @@ function AgentAuthorizedWorkspace({
                     <p>多轮短期记忆 · 5 步 ReAct 自主规划 · 跨模块读写与知识库引用</p>
                   </div>
                 </div>
-                <span className="mcp-status"><Sparkle size={14} />{chat.readableStatus}</span>
+                <div className="mcp-header-actions">
+                  <span className={`agent-header-model-badge${usesIndependentChannel ? ' is-independent' : ''}`}>
+                    <Sparkle size={13} />
+                    {effectiveModel}
+                    <em>{usesIndependentChannel ? '独立通道' : '默认通道'}</em>
+                  </span>
+                  <span className="mcp-status"><Sparkle size={14} />{chat.readableStatus}</span>
+                </div>
               </header>
 
               <AssistantConversationPane
@@ -285,7 +384,18 @@ function AgentAuthorizedWorkspace({
                 emptyIntro="在这里向 Agent 下达复杂销售目标。支持多轮连续追问、跨客户/互动/商机/报价/知识库多步推理，并自动生成高风险待审批邮件；产物会实时同步回业务工作台。"
                 loadingHistoryTitle="正在加载 Agent 记忆上下文"
                 attachmentAriaLabel="选择 Agent 附件"
-                placeholder={chat.quotaUnavailable ? '尚未分配 Token 额度，请联系管理员' : '自主 Agent 模式：输入跨模块目标或连续追问（按 Enter 发送，Shift + Enter 换行）'}
+                placeholder={chat.quotaUnavailable ? '默认通道 Token 额度不足，可切换上方 Agent 独立通道模型或联系管理员' : '自主 Agent 模式：输入跨模块目标或连续追问（按 Enter 发送，Shift + Enter 换行）'}
+                modelSelector={(
+                  <AgentModelPicker
+                    status={modelStatus}
+                    agentModels={agentModels}
+                    defaultMcpModel={defaultMcpModel}
+                    selectedModel={effectiveModel}
+                    usesIndependentChannel={usesIndependentChannel}
+                    disabled={chat.isPending}
+                    onSelect={handleSelectModel}
+                  />
+                )}
                 extraFooterMeta={<span><Robot size={15} />ReAct 多步自主规划</span>}
               />
             </div>
@@ -302,8 +412,126 @@ function AgentAuthorizedWorkspace({
           )}
         </section>
       </div>
-      {tokenAllocationOpen ? <TokenAllocationDialog onClose={onCloseTokenAllocation} /> : null}
     </section>
+  )
+}
+
+function AgentModelPicker({
+  status,
+  agentModels,
+  defaultMcpModel,
+  selectedModel,
+  usesIndependentChannel,
+  disabled,
+  onSelect,
+}: {
+  status?: AiModelStatus
+  agentModels: string[]
+  defaultMcpModel: string
+  selectedModel: string
+  usesIndependentChannel: boolean
+  disabled: boolean
+  onSelect: (model: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handlePointerDown(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  const showDefaultFallback = !agentModels.includes(defaultMcpModel)
+
+  return (
+    <div ref={containerRef} className="agent-model-picker">
+      <button
+        type="button"
+        className={`agent-model-trigger${usesIndependentChannel ? ' is-independent' : ''}`}
+        aria-label="选择 Agent 模型"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Sparkle size={14} />
+        <b>{selectedModel}</b>
+        <CaretDown size={12} />
+      </button>
+      {open ? (
+        <div className="agent-model-menu" role="listbox" aria-label="可选 Agent 模型列表">
+          {agentModels.length > 0 ? (
+            <div className="agent-model-menu-group">
+              <p className="agent-model-menu-label">自主 Agent 独立通道（不占 MCP 额度）</p>
+              {agentModels.map((modelId) => {
+                const selected = modelId === selectedModel
+                const isDefaultAgent = modelId === status?.agent?.model
+                return (
+                  <button
+                    key={modelId}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    className={`agent-model-option${selected ? ' is-selected' : ''}`}
+                    onClick={() => {
+                      onSelect(modelId)
+                      setOpen(false)
+                    }}
+                  >
+                    <span>
+                      <strong>{modelId}</strong>
+                      {isDefaultAgent ? <em>通道默认</em> : null}
+                    </span>
+                    {selected ? <Check size={14} /> : null}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+
+          {showDefaultFallback ? (
+            <div className="agent-model-menu-group">
+              <p className="agent-model-menu-label">默认通道（消耗 MCP 普通额度）</p>
+              <button
+                type="button"
+                role="option"
+                aria-selected={selectedModel === defaultMcpModel}
+                className={`agent-model-option${selectedModel === defaultMcpModel ? ' is-selected' : ''}`}
+                onClick={() => {
+                  onSelect(defaultMcpModel)
+                  setOpen(false)
+                }}
+              >
+                <span>
+                  <strong>{defaultMcpModel}</strong>
+                  <em>默认模型</em>
+                </span>
+                {selectedModel === defaultMcpModel ? <Check size={14} /> : null}
+              </button>
+            </div>
+          ) : null}
+
+          <div className="agent-model-menu-footer">
+            <Link to="/app/settings#model" onClick={() => setOpen(false)}>
+              {agentModels.length > 0 ? '在设置中管理可选模型 →' : '开启自主 Agent 独立通道 →'}
+            </Link>
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }
 

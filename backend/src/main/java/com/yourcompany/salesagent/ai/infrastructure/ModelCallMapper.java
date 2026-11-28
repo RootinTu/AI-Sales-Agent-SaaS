@@ -40,6 +40,49 @@ public interface ModelCallMapper {
 	ModelUsageSummaryRow selectAllUsageSummary(@Param("organizationId") UUID organizationId);
 
 	@Select("""
+			SELECT COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+			       COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+			       COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+			       COUNT(*)::bigint AS successful_calls,
+			       MAX(completed_at) AS last_called_at
+			FROM model_call
+			WHERE organization_id = #{organizationId}
+			  AND status = 'SUCCEEDED'
+			  AND purpose = 'KNOWLEDGE_EMBEDDING'
+			""")
+	ModelUsageSummaryRow selectEmbeddingUsageSummary(@Param("organizationId") UUID organizationId);
+
+	@Select("""
+			SELECT COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+			       COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+			       COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+			       COUNT(*)::bigint AS successful_calls,
+			       MAX(completed_at) AS last_called_at
+			FROM model_call
+			WHERE organization_id = #{organizationId}
+			  AND status = 'SUCCEEDED'
+			  AND (purpose = 'AGENT_PLAN' OR COALESCE(input_snapshot->>'mode', '') = 'AGENT')
+			""")
+	ModelUsageSummaryRow selectAgentUsageSummary(@Param("organizationId") UUID organizationId);
+
+	@Select("""
+			SELECT provider,
+			       model,
+			       COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+			       COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+			       COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+			       COUNT(*)::bigint AS successful_calls,
+			       MAX(completed_at) AS last_called_at
+			FROM model_call
+			WHERE organization_id = #{organizationId}
+			  AND status = 'SUCCEEDED'
+			  AND (purpose = 'AGENT_PLAN' OR COALESCE(input_snapshot->>'mode', '') = 'AGENT')
+			GROUP BY provider, model
+			ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC, model ASC
+			""")
+	List<ModelUsageBreakdownRow> selectAgentUsageByModel(@Param("organizationId") UUID organizationId);
+
+	@Select("""
 			SELECT provider,
 			       model,
 			       COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
@@ -58,15 +101,26 @@ public interface ModelCallMapper {
 	@Select("""
 			SELECT quota.allocated_tokens,
 			       COALESCE(SUM(CASE WHEN model_usage.status = 'SUCCEEDED'
+			                              AND model_usage.purpose <> 'KNOWLEDGE_EMBEDDING'
+			                              AND COALESCE(model_usage.input_snapshot->>'independentAgentChannel', 'false') <> 'true'
+			                              AND NOT (model_usage.purpose = 'AGENT_PLAN' AND model_usage.provider <> 'QWEN')
 			                         THEN COALESCE(model_usage.input_tokens, 0) + COALESCE(model_usage.output_tokens, 0)
-			                         ELSE 0 END), 0)::bigint AS used_tokens
+			                         ELSE 0 END), 0)::bigint AS used_tokens,
+			       quota.embedding_allocated_tokens,
+			       COALESCE(SUM(CASE WHEN model_usage.status = 'SUCCEEDED'
+			                              AND model_usage.purpose = 'KNOWLEDGE_EMBEDDING'
+			                         THEN COALESCE(model_usage.input_tokens, 0) + COALESCE(model_usage.output_tokens, 0)
+			                         ELSE 0 END), 0)::bigint AS embedding_used_tokens,
+			       budget.embedding_total_tokens AS team_embedding_budget_tokens
 			FROM organization_member member
 			LEFT JOIN member_token_quota quota
 			       ON quota.organization_id = member.organization_id AND quota.member_id = member.id
+			LEFT JOIN organization_token_budget budget
+			       ON budget.organization_id = member.organization_id
 			LEFT JOIN model_call model_usage
 			       ON model_usage.organization_id = member.organization_id AND model_usage.member_id = member.id
 			WHERE member.organization_id = #{organizationId} AND member.id = #{memberId}
-			GROUP BY quota.allocated_tokens
+			GROUP BY quota.allocated_tokens, quota.embedding_allocated_tokens, budget.embedding_total_tokens
 			""")
 	MemberTokenUsageRow selectMemberTokenUsage(
 			@Param("organizationId") UUID organizationId,

@@ -12,8 +12,10 @@
             <arg column="member_id" javaType="java.util.UUID" />
             <arg column="title" javaType="java.lang.String" />
             <arg column="channel" javaType="java.lang.String" />
+            <arg column="mode" javaType="java.lang.String" />
             <arg column="status" javaType="java.lang.String" />
             <arg column="last_message_at" javaType="java.time.Instant" />
+            <arg column="expires_at" javaType="java.time.Instant" />
             <arg column="created_at" javaType="java.time.Instant" />
             <arg column="updated_at" javaType="java.time.Instant" />
             <arg column="version" javaType="java.lang.Integer" />
@@ -41,8 +43,10 @@
                member_id,
                title,
                channel,
+               mode,
                status,
                last_message_at,
+               expires_at,
                created_at,
                updated_at,
                version
@@ -59,14 +63,18 @@
                member_id,
                title,
                channel,
+               mode,
                status,
                last_message_at,
+               expires_at,
                created_at,
                updated_at,
                version
         FROM assistant_conversation
         WHERE organization_id = #{organizationId}
           AND (member_id = #{memberId} OR member_id IS NULL)
+          AND mode = #{mode}
+          AND (expires_at IS NULL OR expires_at &gt; #{now})
         ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC
     </select>
 
@@ -78,8 +86,10 @@
             member_id,
             title,
             channel,
+            mode,
             status,
             last_message_at,
+            expires_at,
             created_at,
             updated_at
         )
@@ -90,8 +100,10 @@
             #{memberId},
             #{title},
             #{channel},
+            #{mode},
             'OPEN',
             #{now},
+            #{expiresAt},
             #{now},
             #{now}
         )
@@ -100,11 +112,26 @@
     <update id="touchConversation">
         UPDATE assistant_conversation
         SET last_message_at = #{now},
+            expires_at = #{expiresAt},
             updated_at = #{now},
             version = version + 1
         WHERE organization_id = #{organizationId}
           AND id = #{conversationId}
     </update>
+
+    <delete id="deleteConversation">
+        DELETE FROM assistant_conversation
+        WHERE organization_id = #{organizationId}
+          AND member_id = #{memberId}
+          AND id = #{conversationId}
+    </delete>
+
+    <delete id="deleteExpiredConversations">
+        DELETE FROM assistant_conversation
+        WHERE mode = 'LIGHT'
+          AND expires_at IS NOT NULL
+          AND expires_at &lt;= #{now}
+    </delete>
 
     <insert id="insertMessage">
         INSERT INTO assistant_message (

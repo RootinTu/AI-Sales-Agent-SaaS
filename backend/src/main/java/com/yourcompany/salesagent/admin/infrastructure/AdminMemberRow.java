@@ -17,5 +17,22 @@ public record AdminMemberRow(
 		Instant lastLoginAt,
 		Instant createdAt,
 		Long allocatedTokens,
-		long usedTokens) {
+		long usedTokens,
+		Long embeddingAllocatedTokens,
+		long embeddingUsedTokens) {
+
+	public AdminMemberRow(
+			UUID id,
+			UUID userId,
+			String email,
+			String displayName,
+			MemberRole role,
+			MemberStatus status,
+			Instant joinedAt,
+			Instant lastLoginAt,
+			Instant createdAt,
+			Long allocatedTokens,
+			long usedTokens) {
+		this(id, userId, email, displayName, role, status, joinedAt, lastLoginAt, createdAt, allocatedTokens, usedTokens, null, 0L);
+	}
 }

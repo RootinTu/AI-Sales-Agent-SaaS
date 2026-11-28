@@ -124,9 +124,17 @@ function TeamSettingsForm({ team }: { team: AdminTeam }) {
 function TeamBudgetForm({ budget }: { budget: TeamTokenBudget }) {
   const queryClient = useQueryClient()
   const [totalInput, setTotalInput] = useState<string | null>(null)
+  const [embeddingTotalInput, setEmbeddingTotalInput] = useState<string | null>(null)
   const value = totalInput ?? (budget.totalTokens == null ? '' : String(budget.totalTokens))
   const invalid = !/^\d+$/.test(value) || Number(value) > 1_000_000_000_000
     || !Number.isSafeInteger(Number(value)) || Number(value) < budget.allocatedTokens
+
+  const embeddingValue = embeddingTotalInput ?? (budget.embeddingTotalTokens == null ? '' : String(budget.embeddingTotalTokens))
+  const embeddingAllocated = budget.embeddingAllocatedTokens ?? 0
+  const embeddingInvalid = embeddingValue.trim() !== '' && (
+    !/^\d+$/.test(embeddingValue.trim()) || Number(embeddingValue) > 1_000_000_000_000
+    || !Number.isSafeInteger(Number(embeddingValue)) || Number(embeddingValue) < embeddingAllocated
+  )
 
   const mutation = useMutation({
     mutationFn: () => updateTeamTokenBudget(Number(value)),
@@ -137,38 +145,91 @@ function TeamBudgetForm({ budget }: { budget: TeamTokenBudget }) {
     },
   })
 
+  const embeddingMutation = useMutation({
+    mutationFn: () => updateTeamTokenBudget({
+      totalTokens: budget.totalTokens ?? Number(value || 0),
+      embeddingTotalTokens: embeddingValue.trim() === '' ? null : Number(embeddingValue),
+      updateEmbeddingBudget: true,
+    }),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData(['team-token-budget'], updated)
+      setEmbeddingTotalInput(null)
+      await queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
+    },
+  })
+
   const percent = budget.totalTokens && budget.totalTokens > 0
     ? Math.min(100, Math.round((budget.allocatedTokens / budget.totalTokens) * 100))
+    : 0
+  const embeddingPercent = budget.embeddingTotalTokens && budget.embeddingTotalTokens > 0
+    ? Math.min(100, Math.round((embeddingAllocated / budget.embeddingTotalTokens) * 100))
     : 0
 
   return (
     <div className="admin-budget-body">
-      <div className="mcp-token-budget-stats" aria-label="团队 Token 预算统计">
-        <span>总额 <strong>{budget.totalTokens == null ? '未设置' : formatCompactNumber(budget.totalTokens)}</strong></span>
-        <span>已分配 <strong>{formatCompactNumber(budget.allocatedTokens)}</strong></span>
-        <span>待分配 <strong>{budget.unallocatedTokens == null ? '—' : formatCompactNumber(budget.unallocatedTokens)}</strong></span>
+      <div className="admin-budget-subsection">
+        <strong>普通对话模型预算（MCP 助手与知识问答）</strong>
+        <div className="mcp-token-budget-stats" aria-label="团队 Token 预算统计">
+          <span>总额 <strong>{budget.totalTokens == null ? '未设置' : formatCompactNumber(budget.totalTokens)}</strong></span>
+          <span>已分配 <strong>{formatCompactNumber(budget.allocatedTokens)}</strong></span>
+          <span>待分配 <strong>{budget.unallocatedTokens == null ? '—' : formatCompactNumber(budget.unallocatedTokens)}</strong></span>
+        </div>
+        <progress className="admin-budget-progress" max={100} value={percent} aria-label={`已分配比例 ${percent}%`} />
+        <form
+          className="admin-inline-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!invalid) mutation.mutate()
+          }}
+        >
+          <input
+            aria-label="团队 Token 总额"
+            inputMode="numeric"
+            placeholder="输入团队普通模型 Token 总额，例如 500000"
+            value={value}
+            onChange={(event) => setTotalInput(event.target.value)}
+          />
+          <button className="button button-primary" type="submit" disabled={invalid || mutation.isPending}>
+            {mutation.isPending ? '保存中…' : '保存总额'}
+          </button>
+        </form>
+        {mutation.isError ? <p className="admin-form-error">{mutation.error.message}</p> : null}
+        {mutation.isSuccess ? <p className="admin-form-success">团队 Token 总额已更新。</p> : null}
       </div>
-      <progress className="admin-budget-progress" max={100} value={percent} aria-label={`已分配比例 ${percent}%`} />
-      <form
-        className="admin-inline-form"
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (!invalid) mutation.mutate()
-        }}
-      >
-        <input
-          aria-label="团队 Token 总额"
-          inputMode="numeric"
-          placeholder="输入团队 Token 总额，例如 500000"
-          value={value}
-          onChange={(event) => setTotalInput(event.target.value)}
-        />
-        <button className="button button-primary" type="submit" disabled={invalid || mutation.isPending}>
-          {mutation.isPending ? '保存中…' : '保存总额'}
-        </button>
-      </form>
-      {mutation.isError ? <p className="admin-form-error">{mutation.error.message}</p> : null}
-      {mutation.isSuccess ? <p className="admin-form-success">团队 Token 总额已更新。</p> : null}
+
+      <div className="admin-budget-subsection">
+        <strong>向量模型预算（知识库文档向量化与语义检索）</strong>
+        <div className="mcp-token-budget-stats" aria-label="团队向量模型 Token 预算统计">
+          <span>向量总额 <strong>{budget.embeddingTotalTokens == null ? '未单独设限' : formatCompactNumber(budget.embeddingTotalTokens)}</strong></span>
+          <span>已分配 <strong>{formatCompactNumber(embeddingAllocated)}</strong></span>
+          <span>待分配 <strong>{budget.embeddingUnallocatedTokens == null ? '—' : formatCompactNumber(budget.embeddingUnallocatedTokens)}</strong></span>
+        </div>
+        <progress className="admin-budget-progress" max={100} value={embeddingPercent} aria-label={`向量已分配比例 ${embeddingPercent}%`} />
+        <form
+          className="admin-inline-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!embeddingInvalid && budget.totalTokens != null) embeddingMutation.mutate()
+          }}
+        >
+          <input
+            aria-label="团队向量模型 Token 总额"
+            inputMode="numeric"
+            placeholder="留空不单独限制；例如输入 1000000"
+            value={embeddingValue}
+            onChange={(event) => setEmbeddingTotalInput(event.target.value)}
+          />
+          <button
+            className="button button-secondary"
+            type="submit"
+            disabled={budget.totalTokens == null || embeddingInvalid || embeddingMutation.isPending}
+          >
+            {embeddingMutation.isPending ? '保存中…' : '保存向量总额'}
+          </button>
+        </form>
+        {embeddingMutation.isError ? <p className="admin-form-error">{embeddingMutation.error.message}</p> : null}
+        {embeddingMutation.isSuccess ? <p className="admin-form-success">团队向量模型 Token 总额已更新。</p> : null}
+      </div>
     </div>
   )
 }

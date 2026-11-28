@@ -1,4 +1,4 @@
-import { MagicWand, PlusSquare, Robot, Sparkle, SquaresFour } from '@phosphor-icons/react'
+import { Clock, MagicWand, PlusSquare, Robot, Sparkle, SquaresFour, Trash } from '@phosphor-icons/react'
 import { useState } from 'react'
 import { useAuth } from '../auth/use-auth'
 import {
@@ -91,6 +91,7 @@ export function McpAssistantPage() {
               <span>新建</span>
             </button>
           </header>
+          <p className="mcp-retention-note"><Clock size={12} />默认保留 7 天，到期自动清除（与自主 Agent 隔离）</p>
           {chat.isGuest ? (
             <p className="mcp-history-empty">当前展示模拟会话，登录后可使用自动化聊天和会话历史。</p>
           ) : chat.conversations.length === 0 ? (
@@ -101,16 +102,27 @@ export function McpAssistantPage() {
           ) : (
             <div className="mcp-history-list">
               {chat.conversations.map((conversation) => (
-                <button
-                  key={conversation.id}
-                  type="button"
-                  className={conversation.id === chat.activeConversationId ? 'is-active' : ''}
-                  disabled={chat.isPending}
-                  onClick={() => chat.selectConversation(conversation.id)}
-                >
-                  <strong>{conversation.title}</strong>
-                  <span>{formatTime(conversation.lastMessageAt ?? conversation.createdAt)} · {conversation.channel}</span>
-                </button>
+                <div key={conversation.id} className={`mcp-history-item-wrap${conversation.id === chat.activeConversationId ? ' is-active' : ''}`}>
+                  <button
+                    type="button"
+                    className={conversation.id === chat.activeConversationId ? 'is-active' : ''}
+                    disabled={chat.isPending}
+                    onClick={() => chat.selectConversation(conversation.id)}
+                  >
+                    <strong>{conversation.title}</strong>
+                    <span>{formatTime(conversation.lastMessageAt ?? conversation.createdAt)} · {conversation.channel}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mcp-history-delete"
+                    aria-label={`删除会话 ${conversation.title}`}
+                    title="删除会话"
+                    disabled={chat.isPending}
+                    onClick={() => void chat.deleteConversation(conversation.id)}
+                  >
+                    <Trash size={13} />
+                  </button>
+                </div>
               ))}
             </div>
           )}

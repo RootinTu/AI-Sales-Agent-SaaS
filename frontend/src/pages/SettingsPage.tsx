@@ -31,6 +31,29 @@ const PROVIDER_LABELS: Record<string, string> = {
   OPENAI_COMPATIBLE: 'OpenAI 兼容',
 }
 
+const VOLCENGINE_AGENT_PRESET_MODELS = [
+  'doubao-seed-2.1-pro',
+  'doubao-seed-evolving',
+  'deepseek-v4-pro',
+  'glm-5.3',
+  'kimi-k3',
+]
+
+function formatModelList(models?: string[]) {
+  return models && models.length > 0 ? models.join(', ') : ''
+}
+
+function parseModelList(raw: string) {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[,;\n\r]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  )
+}
+
 function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
   const queryClient = useQueryClient()
   const [provider, setProvider] = useState<AiModelProvider>(status?.provider ?? 'QWEN')
@@ -45,6 +68,9 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
   const [agentModel, setAgentModel] = useState(status?.agent?.model ?? '')
   const [agentBaseUrl, setAgentBaseUrl] = useState(status?.agent?.baseUrl ?? PROVIDER_DEFAULT_BASE_URLS.VOLCENGINE_ARK)
   const [agentApiKey, setAgentApiKey] = useState('')
+  const [agentAvailableModelsInput, setAgentAvailableModelsInput] = useState(
+    formatModelList(status?.agent?.availableModels),
+  )
 
   const modelTest = useMutation({ mutationFn: testAiModelConnection })
   const agentTest = useMutation({ mutationFn: testAgentModelConnection })
@@ -57,6 +83,9 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
       if (savedStatus.agent?.provider) setAgentProvider(savedStatus.agent.provider)
       if (savedStatus.agent?.model !== undefined) setAgentModel(savedStatus.agent.model)
       if (savedStatus.agent?.baseUrl) setAgentBaseUrl(savedStatus.agent.baseUrl)
+      if (savedStatus.agent?.availableModels) {
+        setAgentAvailableModelsInput(formatModelList(savedStatus.agent.availableModels))
+      }
       setApiKey('')
       setAgentApiKey('')
       modelTest.reset()
@@ -96,6 +125,8 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
       payload.agentProvider = agentProvider
       payload.agentModel = agentModel.trim()
       payload.agentBaseUrl = agentBaseUrl.trim()
+      const parsedModels = parseModelList(agentAvailableModelsInput)
+      if (parsedModels.length > 0) payload.agentAvailableModels = parsedModels
       if (agentApiKey.trim()) payload.agentApiKey = agentApiKey.trim()
     } else if (initialAgentEnabled) {
       payload.agentEnabled = false
@@ -136,6 +167,34 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
             <label><span>Agent 模型名称</span><input aria-label="Agent 模型名称" type="text" required maxLength={120} value={agentModel} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentModel(event.target.value)} placeholder="例如：doubao-seed-2.1-pro 或 deepseek-v4-pro" /><small>请填写套餐控制台中该 Plan 支持的模型 ID。</small></label>
             <label><span>Agent API Key</span><input aria-label="Agent API Key" type="password" maxLength={500} autoComplete="new-password" value={agentApiKey} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentApiKey(event.target.value)} placeholder={status?.agent?.apiKeyConfigured ? '已加密保存，留空表示不修改' : '请输入 Agent Plan 专属 API Key'} /><small>{status?.agent?.apiKeyConfigured ? '密钥已加密保存，留空不覆盖。' : '数据库仅保存 AES-GCM 密文，与默认通道密钥隔离。'}</small></label>
             <label><span>Agent API 地址</span><input aria-label="Agent API 地址" type="url" required maxLength={500} value={agentBaseUrl} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentBaseUrl(event.target.value)} placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" /><small>仅接受 HTTPS 地址；火山方舟 Agent Plan 勿填按量端点 /api/v3。</small></label>
+            <label className="field-span-2">
+              <span className="settings-label-row">
+                <span>可选切换模型列表（用于 Agent 对话框左下角一键选模型）</span>
+                {agentProvider === 'VOLCENGINE_ARK' ? (
+                  <button
+                    type="button"
+                    className="compact-button"
+                    disabled={isGuest || modelSave.isPending}
+                    onClick={() => {
+                      setAgentAvailableModelsInput(VOLCENGINE_AGENT_PRESET_MODELS.join(', '))
+                      if (!agentModel.trim()) setAgentModel(VOLCENGINE_AGENT_PRESET_MODELS[0])
+                    }}
+                  >
+                    填入方舟 Agent Plan 常用模型
+                  </button>
+                ) : null}
+              </span>
+              <input
+                aria-label="Agent 可选模型列表"
+                type="text"
+                maxLength={1000}
+                value={agentAvailableModelsInput}
+                disabled={isGuest || modelSave.isPending}
+                onChange={(event) => setAgentAvailableModelsInput(event.target.value)}
+                placeholder="多个模型用英文逗号分隔，例如：doubao-seed-2.1-pro, deepseek-v4-pro, glm-5.3, kimi-k3"
+              />
+              <small>留空时方舟通道默认提供 5 个常用 Agent Plan 模型；自定义后仅允许在所列模型与默认模型间切换。</small>
+            </label>
             <div className="settings-subpanel-actions field-span-2">
               <span className={`model-test-result${agentTest.isError ? ' is-error' : ''}`} role="status">
                 {agentTest.isSuccess

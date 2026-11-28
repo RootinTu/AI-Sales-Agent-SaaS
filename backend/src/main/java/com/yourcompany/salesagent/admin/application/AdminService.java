@@ -125,26 +125,53 @@ public class AdminService {
 			MemberTokenQuotaRequest request) {
 		lockOrganization(actor.organizationId());
 		var member = requireMember(actor.organizationId(), memberId);
-		var allocatedTokens = request.allocatedTokens();
-		if (allocatedTokens != null && allocatedTokens > 1_000_000_000_000L) {
-			throw new AdminValidationException("单个成员 Token 额度不能超过 1 万亿");
+		boolean updateAllocated = request.updateAllocatedQuota() == null || Boolean.TRUE.equals(request.updateAllocatedQuota());
+		boolean updateEmbedding = Boolean.TRUE.equals(request.updateEmbeddingQuota())
+				|| (request.updateEmbeddingQuota() == null && request.embeddingAllocatedTokens() != null);
+
+		var nextAllocated = updateAllocated ? request.allocatedTokens() : member.allocatedTokens();
+		var nextEmbedding = updateEmbedding ? request.embeddingAllocatedTokens() : member.embeddingAllocatedTokens();
+
+		if (nextAllocated != null && nextAllocated > 1_000_000_000_000L) {
+			throw new AdminValidationException("单个成员普通模型 Token 额度不能超过 1 万亿");
 		}
-		var budget = adminMapper.selectTeamTokenBudget(actor.organizationId());
-		if (allocatedTokens != null && budget == null) {
-			throw new AdminValidationException("请先设置团队 Token 总额");
+		if (nextEmbedding != null && nextEmbedding > 1_000_000_000_000L) {
+			throw new AdminValidationException("单个成员向量模型 Token 额度不能超过 1 万亿");
 		}
-		var assigned = adminMapper.sumMemberTokenQuotas(actor.organizationId());
-		var nextAssigned = assigned - (member.allocatedTokens() == null ? 0 : member.allocatedTokens())
-				+ (allocatedTokens == null ? 0 : allocatedTokens);
-		if (budget != null && nextAssigned > budget) {
-			throw new AdminValidationException("分配后将超过团队 Token 总额，请先增加总额或减少其他成员额度");
+
+		if (updateAllocated) {
+			var budget = adminMapper.selectTeamTokenBudget(actor.organizationId());
+			if (nextAllocated != null && budget == null) {
+				throw new AdminValidationException("请先设置团队 Token 总额");
+			}
+			var assigned = adminMapper.sumMemberTokenQuotas(actor.organizationId());
+			var nextAssigned = assigned - (member.allocatedTokens() == null ? 0 : member.allocatedTokens())
+					+ (nextAllocated == null ? 0 : nextAllocated);
+			if (budget != null && nextAssigned > budget) {
+				throw new AdminValidationException("分配后将超过团队 Token 总额，请先增加总额或减少其他成员额度");
+			}
 		}
-		if (allocatedTokens == null) {
+
+		if (updateEmbedding) {
+			var embeddingBudget = adminMapper.selectTeamEmbeddingTokenBudget(actor.organizationId());
+			if (nextEmbedding != null && embeddingBudget == null) {
+				throw new AdminValidationException("请先设置团队向量模型 Token 总额");
+			}
+			var embeddingAssigned = adminMapper.sumMemberEmbeddingTokenQuotas(actor.organizationId());
+			var nextEmbeddingAssigned = embeddingAssigned
+					- (member.embeddingAllocatedTokens() == null ? 0 : member.embeddingAllocatedTokens())
+					+ (nextEmbedding == null ? 0 : nextEmbedding);
+			if (embeddingBudget != null && nextEmbeddingAssigned > embeddingBudget) {
+				throw new AdminValidationException("分配后将超过团队向量模型 Token 总额，请先增加总额或减少其他成员额度");
+			}
+		}
+
+		if (nextAllocated == null && nextEmbedding == null) {
 			adminMapper.deleteMemberTokenQuota(actor.organizationId(), memberId);
 		}
 		else {
 			adminMapper.upsertMemberTokenQuota(
-					actor.organizationId(), memberId, allocatedTokens, actor.memberId(), clock.instant());
+					actor.organizationId(), memberId, nextAllocated, nextEmbedding, actor.memberId(), clock.instant());
 		}
 		return AdminMemberResponse.from(requireMember(actor.organizationId(), memberId));
 	}
@@ -157,22 +184,60 @@ public class AdminService {
 	@Transactional
 	public TeamTokenBudgetResponse updateTeamTokenBudget(AuthPrincipal actor, TeamTokenBudgetRequest request) {
 		lockOrganization(actor.organizationId());
+		var currentTotal = adminMapper.selectTeamTokenBudget(actor.organizationId());
+		var currentEmbeddingTotal = adminMapper.selectTeamEmbeddingTokenBudget(actor.organizationId());
 		var assigned = adminMapper.sumMemberTokenQuotas(actor.organizationId());
-		if (request.totalTokens() > 1_000_000_000_000L) {
+		var embeddingAssigned = adminMapper.sumMemberEmbeddingTokenQuotas(actor.organizationId());
+
+		var nextTotal = request.totalTokens() != null ? request.totalTokens() : currentTotal;
+		if (nextTotal == null) {
+			throw new AdminValidationException("请先设置团队普通模型 Token 总额");
+		}
+		if (nextTotal > 1_000_000_000_000L) {
 			throw new AdminValidationException("团队 Token 总额不能超过 1 万亿");
 		}
-		if (request.totalTokens() < assigned) {
+		if (nextTotal < assigned) {
 			throw new AdminValidationException("团队总额不能低于已分配额度，请先调整成员额度");
 		}
+
+		boolean updateEmbedding = Boolean.TRUE.equals(request.updateEmbeddingBudget())
+				|| request.embeddingTotalTokens() != null;
+		var nextEmbeddingTotal = updateEmbedding ? request.embeddingTotalTokens() : currentEmbeddingTotal;
+		if (nextEmbeddingTotal != null) {
+			if (nextEmbeddingTotal > 1_000_000_000_000L) {
+				throw new AdminValidationException("团队向量模型 Token 总额不能超过 1 万亿");
+			}
+			if (nextEmbeddingTotal < embeddingAssigned) {
+				throw new AdminValidationException("团队向量模型总额不能低于已分配额度，请先调整成员额度");
+			}
+		}
+		else if (updateEmbedding && embeddingAssigned > 0) {
+			throw new AdminValidationException("团队向量模型总额不能低于已分配额度，请先调整成员额度");
+		}
+
 		adminMapper.upsertTeamTokenBudget(
-				actor.organizationId(), request.totalTokens(), actor.memberId(), clock.instant());
-		return new TeamTokenBudgetResponse(request.totalTokens(), assigned, request.totalTokens() - assigned);
+				actor.organizationId(), nextTotal, nextEmbeddingTotal, actor.memberId(), clock.instant());
+		return new TeamTokenBudgetResponse(
+				nextTotal,
+				assigned,
+				nextTotal - assigned,
+				nextEmbeddingTotal,
+				embeddingAssigned,
+				nextEmbeddingTotal == null ? null : Math.max(0, nextEmbeddingTotal - embeddingAssigned));
 	}
 
 	private TeamTokenBudgetResponse teamTokenBudget(UUID organizationId) {
 		var total = adminMapper.selectTeamTokenBudget(organizationId);
 		var assigned = adminMapper.sumMemberTokenQuotas(organizationId);
-		return new TeamTokenBudgetResponse(total, assigned, total == null ? null : Math.max(0, total - assigned));
+		var embeddingTotal = adminMapper.selectTeamEmbeddingTokenBudget(organizationId);
+		var embeddingAssigned = adminMapper.sumMemberEmbeddingTokenQuotas(organizationId);
+		return new TeamTokenBudgetResponse(
+				total,
+				assigned,
+				total == null ? null : Math.max(0, total - assigned),
+				embeddingTotal,
+				embeddingAssigned,
+				embeddingTotal == null ? null : Math.max(0, embeddingTotal - embeddingAssigned));
 	}
 
 	private void lockOrganization(UUID organizationId) {

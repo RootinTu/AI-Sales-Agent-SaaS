@@ -85,6 +85,7 @@ public class AssistantChatService {
 	private static final Logger LOGGER = LoggerFactory.getLogger(AssistantChatService.class);
 	private static final int MAX_AGENT_STEPS = 5;
 	private static final int HISTORY_LIMIT = 12;
+	private static final Duration MCP_CONVERSATION_TTL = Duration.ofDays(7);
 	private static final TypeReference<List<AssistantToolTrace>> TOOL_TRACE_LIST_TYPE = new TypeReference<>() {
 	};
 	private static final List<Map<String, Object>> ASSISTANT_TOOLS = List.of(
@@ -234,10 +235,17 @@ public class AssistantChatService {
 	}
 
 	public UUID beginStream(AuthPrincipal principal, AssistantChatRequest request, boolean desktopClient) {
-		requireModeAuthorized(principal, request.resolvedMode(), desktopClient);
-		aiModelService.requireAvailableTokenQuota(principal.organizationId(), principal.memberId());
+		var mode = request.resolvedMode();
+		var storageMode = request.resolvedStorageMode();
+		requireModeAuthorized(principal, mode, desktopClient);
+		validateModeQuotaBeforeStart(principal, mode, request.model());
+		if ("LOCAL".equals(storageMode)) {
+			// 本地存储模式不落盘到服务器会话表，仅校验附件权限并返回客户端跟踪的会话 ID。
+			resolveAttachmentContext(principal, request.attachmentIds());
+			return request.conversationId() != null ? request.conversationId() : UUID.randomUUID();
+		}
 		return transactions.execute(status -> {
-			var conversation = resolveConversation(principal, request.conversationId(), request.channel(), request.message().strip());
+			var conversation = resolveConversation(principal, request.conversationId(), request.channel(), mode, request.message().strip());
 			var attachments = resolveAttachmentContext(principal, request.attachmentIds());
 			conversationMapper.insertMessage(UUID.randomUUID(), principal.organizationId(), conversation.id(),
 					"USER", request.message().strip(), null, "[]", attachments.data(), clock.instant());
@@ -246,13 +254,26 @@ public class AssistantChatService {
 	}
 
 	public void streamChat(AuthPrincipal principal, UUID conversationId, String message, List<UUID> attachmentIds, BiConsumer<String, Object> events) {
-		streamChat(principal, conversationId, message, attachmentIds, "LIGHT", false, events);
+		streamChat(principal, conversationId, message, attachmentIds, "LIGHT", null, "CLOUD", null, false, events);
+	}
+
+	public void streamChat(AuthPrincipal principal, UUID conversationId, String message, List<UUID> attachmentIds,
+			String rawMode, boolean desktopClient, BiConsumer<String, Object> events) {
+		streamChat(principal, conversationId, message, attachmentIds, rawMode, null, "CLOUD", null, desktopClient, events);
+	}
+
+	public void streamChat(AuthPrincipal principal, UUID conversationId, String message, List<UUID> attachmentIds,
+			String rawMode, String requestedModel, boolean desktopClient, BiConsumer<String, Object> events) {
+		streamChat(principal, conversationId, message, attachmentIds, rawMode, requestedModel, "CLOUD", null, desktopClient, events);
 	}
 
 	/** 工具完成即发事件；模型增量即发事件；done 仅在最终消息提交后发送。 */
 	public void streamChat(AuthPrincipal principal, UUID conversationId, String message, List<UUID> attachmentIds,
-			String rawMode, boolean desktopClient, BiConsumer<String, Object> events) {
+			String rawMode, String requestedModel, String rawStorageMode,
+			List<AssistantChatRequest.LocalHistoryMessage> localHistory,
+			boolean desktopClient, BiConsumer<String, Object> events) {
 		var mode = normalizeMode(rawMode);
+		var localStorage = "AGENT".equals(mode) && "LOCAL".equalsIgnoreCase(rawStorageMode);
 		requireModeAuthorized(principal, mode, desktopClient);
 		var content = new StringBuilder();
 		var traces = new ArrayList<AssistantToolTrace>() {
@@ -266,16 +287,19 @@ public class AssistantChatService {
 		String summary = "";
 		Map<String, Object> data = new LinkedHashMap<>();
 		data.put("assistantMode", mode);
+		data.put("storageMode", localStorage ? "LOCAL" : "CLOUD");
 		String failure = null;
 		try {
 			var attachments = resolveAttachmentContext(principal, attachmentIds);
 			if (!attachments.isEmpty()) {
 				data.putAll(attachments.data());
 			}
-			var history = "AGENT".equals(mode) ? loadConversationHistory(principal, conversationId, message) : List.<Map<String, Object>>of();
+			var history = "AGENT".equals(mode)
+					? (localStorage ? sanitizeLocalHistory(localHistory) : loadConversationHistory(principal, conversationId, message))
+					: List.<Map<String, Object>>of();
 			events.accept("progress", Map.of("text", initialProgressText(mode, message)));
 			var result = "AGENT".equals(mode)
-					? routeAgent(principal, conversationId, message.strip(), traces, attachments, history, events)
+					? routeAgent(principal, conversationId, message.strip(), requestedModel, traces, attachments, history, events)
 					: route(principal, conversationId, message.strip(), traces, attachments, events);
 			summary = result.reasoningSummary();
 			data.putAll(result.data());
@@ -290,9 +314,13 @@ public class AssistantChatService {
 				events.accept("delta", Map.of("text", result.content()));
 			}
 			else try {
-				var configuration = "AGENT".equals(mode)
-						? aiModelService.requireAgentRuntimeConfiguration(principal.organizationId(), principal.memberId())
+				var resolvedAgent = "AGENT".equals(mode)
+						? resolveAgentModel(principal, requestedModel)
+						: null;
+				var configuration = resolvedAgent != null
+						? resolvedAgent.configuration()
 						: aiModelService.requireRuntimeConfiguration(principal.organizationId(), principal.memberId());
+				var independentAgentChannel = resolvedAgent != null && resolvedAgent.independentChannel();
 				var verifiedResult = objectMapper.writeValueAsString(result);
 				var startedAt = clock.instant();
 				var streamUsage = new AtomicReference<ModelUsage>();
@@ -321,8 +349,12 @@ public class AssistantChatService {
 				if (usage != null) {
 					data.put("modelUsage", usageSnapshot(usage));
 				}
+				data.put("model", StringUtils.hasText(responseModel.get()) ? responseModel.get() : configuration.model());
+				data.put("provider", configuration.provider());
 				recordAssistantModelCall(
 						principal,
+						mode,
+						independentAgentChannel,
 						configuration.provider(),
 						configuration.model(),
 						responseModel.get(),
@@ -358,11 +390,14 @@ public class AssistantChatService {
 		data.put("streamStatus", failure == null ? "COMPLETED" : "INTERRUPTED");
 		var response = new AssistantChatResponse(conversationId, UUID.randomUUID(), "assistant", content.toString(),
 				summary, List.copyOf(traces), data, clock.instant());
-		transactions.executeWithoutResult(status -> {
-			conversationMapper.insertMessage(response.messageId(), principal.organizationId(), conversationId,
-					"ASSISTANT", response.content(), response.reasoningSummary(), toJson(response.toolTraces()), data, response.createdAt());
-			conversationMapper.touchConversation(principal.organizationId(), conversationId, response.createdAt());
-		});
+		if (!localStorage) {
+			var nextExpiresAt = expiresAtForMode(mode, response.createdAt());
+			transactions.executeWithoutResult(status -> {
+				conversationMapper.insertMessage(response.messageId(), principal.organizationId(), conversationId,
+						"ASSISTANT", response.content(), response.reasoningSummary(), toJson(response.toolTraces()), data, response.createdAt());
+				conversationMapper.touchConversation(principal.organizationId(), conversationId, nextExpiresAt, response.createdAt());
+			});
+		}
 		if (failure != null) events.accept("error", Map.of("message", failure));
 		events.accept("done", response);
 	}
@@ -375,47 +410,64 @@ public class AssistantChatService {
 	@Transactional
 	public AssistantChatResponse chat(AuthPrincipal principal, AssistantChatRequest request, boolean desktopClient) {
 		var mode = normalizeMode(request.resolvedMode());
+		var localStorage = "AGENT".equals(mode) && "LOCAL".equalsIgnoreCase(request.resolvedStorageMode());
 		requireModeAuthorized(principal, mode, desktopClient);
-		aiModelService.requireAvailableTokenQuota(principal.organizationId(), principal.memberId());
+		validateModeQuotaBeforeStart(principal, mode, request.model());
 		var rawMessage = request.message();
 		var message = rawMessage == null ? "" : rawMessage.strip();
 		if (!StringUtils.hasText(message)) {
 			throw new AssistantWorkflowException("请输入要自动化处理的业务指令");
 		}
-		var conversation = resolveConversation(principal, request.conversationId(), request.channel(), message);
 		var attachments = resolveAttachmentContext(principal, request.attachmentIds());
-		var userMessageTime = clock.instant();
-		conversationMapper.insertMessage(
-				UUID.randomUUID(),
-				principal.organizationId(),
-				conversation.id(),
-				"USER",
-				message,
-				null,
-				"[]",
-				attachments.data(),
-				userMessageTime);
+		UUID conversationId;
+		if (localStorage) {
+			conversationId = request.conversationId() != null ? request.conversationId() : UUID.randomUUID();
+		}
+		else {
+			var conversation = resolveConversation(principal, request.conversationId(), request.channel(), mode, message);
+			conversationId = conversation.id();
+			var userMessageTime = clock.instant();
+			conversationMapper.insertMessage(
+					UUID.randomUUID(),
+					principal.organizationId(),
+					conversationId,
+					"USER",
+					message,
+					null,
+					"[]",
+					attachments.data(),
+					userMessageTime);
+		}
 
-		var history = "AGENT".equals(mode) ? loadConversationHistory(principal, conversation.id(), message) : List.<Map<String, Object>>of();
+		var history = "AGENT".equals(mode)
+				? (localStorage ? sanitizeLocalHistory(request.history()) : loadConversationHistory(principal, conversationId, message))
+				: List.<Map<String, Object>>of();
 		var response = "AGENT".equals(mode)
-				? routeAgent(principal, conversation.id(), message, new ArrayList<>(), attachments, history, (event, payload) -> {})
-				: route(principal, conversation.id(), message, attachments);
+				? routeAgent(principal, conversationId, message, request.model(), new ArrayList<>(), attachments, history, (event, payload) -> {})
+				: route(principal, conversationId, message, attachments);
 		var data = new LinkedHashMap<>(response.data());
 		data.put("assistantMode", mode);
+		data.put("storageMode", localStorage ? "LOCAL" : "CLOUD");
 		var assistantMessageId = UUID.randomUUID();
-		conversationMapper.insertMessage(
-				assistantMessageId,
-				principal.organizationId(),
-				conversation.id(),
-				"ASSISTANT",
-				response.content(),
-				response.reasoningSummary(),
-				toJson(response.toolTraces()),
-				data,
-				response.createdAt());
-		conversationMapper.touchConversation(principal.organizationId(), conversation.id(), response.createdAt());
+		if (!localStorage) {
+			conversationMapper.insertMessage(
+					assistantMessageId,
+					principal.organizationId(),
+					conversationId,
+					"ASSISTANT",
+					response.content(),
+					response.reasoningSummary(),
+					toJson(response.toolTraces()),
+					data,
+					response.createdAt());
+			conversationMapper.touchConversation(
+					principal.organizationId(),
+					conversationId,
+					expiresAtForMode(mode, response.createdAt()),
+					response.createdAt());
+		}
 		return new AssistantChatResponse(
-				conversation.id(),
+				conversationId,
 				assistantMessageId,
 				response.role(),
 				response.content(),
@@ -427,13 +479,27 @@ public class AssistantChatService {
 
 	@Transactional(readOnly = true)
 	public IPage<AssistantConversationResponse> findConversations(AuthPrincipal principal, int page, int size) {
+		return findConversations(principal, "LIGHT", page, size);
+	}
+
+	@Transactional(readOnly = true)
+	public IPage<AssistantConversationResponse> findConversations(AuthPrincipal principal, String rawMode, int page, int size) {
+		var mode = normalizeMode(rawMode);
 		var conversations = conversationMapper.selectConversations(
 				Page.of(page + 1L, size),
 				principal.organizationId(),
-				principal.memberId());
+				principal.memberId(),
+				mode,
+				clock.instant());
 		var records = conversations.getRecords().stream().map(this::toConversationResponse).toList();
 		return new Page<AssistantConversationResponse>(conversations.getCurrent(), conversations.getSize(), conversations.getTotal())
 				.setRecords(records);
+	}
+
+	@Transactional
+	public void deleteConversation(AuthPrincipal principal, UUID conversationId) {
+		ensureConversation(principal, conversationId);
+		conversationMapper.deleteConversation(principal.organizationId(), principal.memberId(), conversationId);
 	}
 
 	@Transactional(readOnly = true)
@@ -547,6 +613,7 @@ public class AssistantChatService {
 			AuthPrincipal principal,
 			UUID conversationId,
 			String message,
+			String requestedModel,
 			List<AssistantToolTrace> traces,
 			AttachmentContext attachments,
 			List<Map<String, Object>> history,
@@ -554,13 +621,15 @@ public class AssistantChatService {
 		if (isHelpRequest(message)) {
 			return agentHelp(traces);
 		}
-		com.yourcompany.salesagent.ai.application.AiModelRuntimeConfiguration configuration;
+		AiModelService.ResolvedAgentModel resolved;
 		try {
-			configuration = aiModelService.requireAgentRuntimeConfiguration(principal.organizationId(), principal.memberId());
+			resolved = resolveAgentModel(principal, requestedModel);
 		}
 		catch (AiModelNotConfiguredException exception) {
 			throw new AssistantWorkflowException("请先在设置中配置并启用 AI 模型，再使用自主 Agent 模式。");
 		}
+		var configuration = resolved.configuration();
+		var independentAgentChannel = resolved.independentChannel();
 
 		var context = new LinkedHashMap<String, Object>();
 		context.put("attachmentCount", attachments.ids().size());
@@ -589,7 +658,7 @@ public class AssistantChatService {
 						"自主 Agent 规划服务暂时不可用，请联系管理员检查 AI 服务地址和内部令牌配置。", exception);
 			}
 			lastPlan = plan;
-			recordAgentStepModelCall(principal, configuration.provider(), configuration.model(), plan, startedAt, clock.instant(), message, step);
+			recordAgentStepModelCall(principal, configuration.provider(), configuration.model(), independentAgentChannel, plan, startedAt, clock.instant(), message, step);
 
 			if (StringUtils.hasText(plan.thought())) {
 				events.accept("progress", Map.of("text", "第 " + step + " 步思考：" + plan.thought()));
@@ -1207,12 +1276,26 @@ public class AssistantChatService {
 		return " 本次已带上 " + attachments.ids().size() + " 个附件；如果后续建议是发送邮件，审批和发送时会优先使用这些附件。";
 	}
 
-	private AssistantConversationRow resolveConversation(AuthPrincipal principal, UUID conversationId, String rawChannel, String firstMessage) {
+	private AssistantConversationRow resolveConversation(
+			AuthPrincipal principal,
+			UUID conversationId,
+			String rawChannel,
+			String mode,
+			String firstMessage) {
 		if (conversationId != null) {
-			return ensureConversation(principal, conversationId);
+			var existing = ensureConversation(principal, conversationId);
+			var existingMode = normalizeMode(existing.mode());
+			if (!existingMode.equals(mode)) {
+				throw new AssistantWorkflowException("该会话属于其他助手模式，请新建会话后继续");
+			}
+			if (existing.expiresAt() != null && !existing.expiresAt().isAfter(clock.instant())) {
+				throw new AssistantWorkflowException("该 MCP 助手会话已超过 7 天保存期限并被清理，请新建会话继续");
+			}
+			return existing;
 		}
 		var id = UUID.randomUUID();
 		var now = clock.instant();
+		var expiresAt = expiresAtForMode(mode, now);
 		conversationMapper.insertConversation(
 				id,
 				principal.organizationId(),
@@ -1220,14 +1303,37 @@ public class AssistantChatService {
 				principal.memberId(),
 				titleFrom(firstMessage),
 				normalizeChannel(rawChannel),
+				mode,
+				expiresAt,
 				now);
 		return conversationMapper.selectConversation(principal.organizationId(), id);
+	}
+
+	private static java.time.Instant expiresAtForMode(String mode, java.time.Instant referenceTime) {
+		return "LIGHT".equals(mode) ? referenceTime.plus(MCP_CONVERSATION_TTL) : null;
+	}
+
+	private List<Map<String, Object>> sanitizeLocalHistory(List<AssistantChatRequest.LocalHistoryMessage> localHistory) {
+		if (localHistory == null || localHistory.isEmpty()) {
+			return List.of();
+		}
+		int start = Math.max(0, localHistory.size() - HISTORY_LIMIT);
+		var result = new ArrayList<Map<String, Object>>();
+		for (int i = start; i < localHistory.size(); i++) {
+			var item = localHistory.get(i);
+			if (item == null || !StringUtils.hasText(item.content())) {
+				continue;
+			}
+			var role = "user".equalsIgnoreCase(item.role()) ? "user" : "assistant";
+			result.add(Map.of("role", role, "content", truncateText(item.content(), 600)));
+		}
+		return result;
 	}
 
 	private AssistantConversationRow ensureConversation(AuthPrincipal principal, UUID conversationId) {
 		var conversation = conversationMapper.selectConversation(principal.organizationId(), conversationId);
 		if (conversation == null || !principal.memberId().equals(conversation.memberId())) {
-			throw new AssistantWorkflowException("没有找到这条 MCP 助手会话，请刷新会话列表后重试");
+			throw new AssistantWorkflowException("没有找到这条助手会话，请刷新会话列表后重试");
 		}
 		return conversation;
 	}
@@ -1237,8 +1343,10 @@ public class AssistantChatService {
 				row.id(),
 				row.title(),
 				row.channel(),
+				normalizeMode(row.mode()),
 				row.status(),
 				row.lastMessageAt(),
+				row.expiresAt(),
 				row.createdAt(),
 				row.updatedAt());
 	}
@@ -1276,8 +1384,36 @@ public class AssistantChatService {
 				traces.stream().filter(trace -> !trace.status().equals("RUNNING")).toList(), data, clock.instant());
 	}
 
+	private void validateModeQuotaBeforeStart(AuthPrincipal principal, String mode, String requestedModel) {
+		if ("AGENT".equals(mode)) {
+			try {
+				resolveAgentModel(principal, requestedModel);
+			}
+			catch (AiModelNotConfiguredException ignored) {
+				// 允许在路由阶段返回清晰的未配置模型提示，保持既有降级体验。
+			}
+			return;
+		}
+		aiModelService.requireAvailableTokenQuota(principal.organizationId(), principal.memberId());
+	}
+
+	private AiModelService.ResolvedAgentModel resolveAgentModel(AuthPrincipal principal, String requestedModel) {
+		var resolved = aiModelService.resolveAgentRuntimeConfiguration(
+				principal.organizationId(), principal.memberId(), requestedModel);
+		if (resolved != null) {
+			return resolved;
+		}
+		var fallback = aiModelService.requireAgentRuntimeConfiguration(principal.organizationId(), principal.memberId());
+		if (fallback == null) {
+			throw new AiModelNotConfiguredException("请先在设置中配置 AI 模型 API Key。");
+		}
+		return new AiModelService.ResolvedAgentModel(fallback, !"QWEN".equalsIgnoreCase(fallback.provider()));
+	}
+
 	private void recordAssistantModelCall(
 			AuthPrincipal principal,
+			String mode,
+			boolean independentAgentChannel,
 			String provider,
 			String configuredModel,
 			String responseModel,
@@ -1289,6 +1425,12 @@ public class AssistantChatService {
 			String verifiedResult,
 			String output) {
 		try {
+			var inputSnapshot = new LinkedHashMap<String, Object>();
+			inputSnapshot.put("channel", "AGENT".equals(mode) ? "AGENT_WORKSPACE" : "MCP_ASSISTANT");
+			inputSnapshot.put("mode", mode);
+			inputSnapshot.put("independentAgentChannel", independentAgentChannel);
+			inputSnapshot.put("userMessageChars", userMessage == null ? 0 : userMessage.length());
+			inputSnapshot.put("verifiedResultChars", verifiedResult == null ? 0 : verifiedResult.length());
 			modelCallRecorder.record(new ModelCallRecordRequest(
 					principal.organizationId(),
 					principal.memberId(),
@@ -1307,10 +1449,7 @@ public class AssistantChatService {
 					Math.max(0, completedAt.toEpochMilli() - startedAt.toEpochMilli()),
 					sha256(userMessage + "\n\n" + verifiedResult),
 					sha256(output == null ? "" : output),
-					Map.of(
-							"channel", "MCP_ASSISTANT",
-							"userMessageChars", userMessage == null ? 0 : userMessage.length(),
-							"verifiedResultChars", verifiedResult == null ? 0 : verifiedResult.length()),
+					inputSnapshot,
 					Map.of("outputChars", output == null ? 0 : output.length()),
 					null,
 					null,
@@ -1318,7 +1457,7 @@ public class AssistantChatService {
 					completedAt));
 		}
 		catch (RuntimeException exception) {
-			LOGGER.warn("Failed to record Qwen model usage for MCP assistant summary", exception);
+			LOGGER.warn("Failed to record model usage for assistant summary", exception);
 		}
 	}
 
@@ -1868,12 +2007,18 @@ public class AssistantChatService {
 			AuthPrincipal principal,
 			String provider,
 			String configuredModel,
+			boolean independentAgentChannel,
 			AgentStepPlan plan,
 			java.time.Instant startedAt,
 			java.time.Instant completedAt,
 			String userMessage,
 			int step) {
 		try {
+			var inputSnapshot = new LinkedHashMap<String, Object>();
+			inputSnapshot.put("channel", "AGENT_WORKSPACE");
+			inputSnapshot.put("mode", "AGENT");
+			inputSnapshot.put("independentAgentChannel", independentAgentChannel);
+			inputSnapshot.put("step", step);
 			modelCallRecorder.record(new ModelCallRecordRequest(
 					principal.organizationId(),
 					principal.memberId(),
@@ -1892,7 +2037,7 @@ public class AssistantChatService {
 					Math.max(0, completedAt.toEpochMilli() - startedAt.toEpochMilli()),
 					sha256(userMessage + "#step=" + step),
 					sha256(plan.toString()),
-					Map.of("channel", "MCP_ASSISTANT", "mode", "AGENT", "step", step),
+					inputSnapshot,
 					compactMap("intent", plan.intent(), "tool", plan.toolName(), "confidence", plan.confidence()),
 					null,
 					null,

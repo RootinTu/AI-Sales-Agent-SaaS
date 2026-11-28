@@ -1,17 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  deleteMcpConversation,
   getMcpConversations,
   getMcpMessages,
+  isDesktopClient,
   streamMcpChatMessage,
   type AssistantMessage,
   type AssistantMode,
+  type AssistantStorageMode,
   type AssistantToolTrace,
   type SendMcpChatMessageInput,
 } from '../../api/mcp-chat-api'
 import { getAiModelStatus } from '../../api/ai-settings-api'
 import { uploadFile, type UploadedFile } from '../../api/files-api'
 import { useIsGuest } from '../../auth/use-auth'
+import {
+  deleteLocalAgentConversation,
+  getLocalAgentMessages,
+  listLocalAgentConversations,
+  saveLocalAgentTurn,
+} from './agent-local-storage'
 
 export interface ChatMessage {
   id: string
@@ -49,6 +58,10 @@ interface UseAssistantSessionOptions {
   welcomeMessage: ChatMessage
   guestDemoMessages: ChatMessage[]
   pendingProgressText: string
+  selectedModel?: string
+  usesIndependentChannel?: boolean
+  storageMode?: AssistantStorageMode
+  storageScope?: string
 }
 
 /**
@@ -60,32 +73,47 @@ export function useAssistantChatSession({
   welcomeMessage,
   guestDemoMessages,
   pendingProgressText,
+  selectedModel,
+  usesIndependentChannel = false,
+  storageMode = 'CLOUD',
+  storageScope,
 }: UseAssistantSessionOptions) {
   const isGuest = useIsGuest()
   const queryClient = useQueryClient()
+  const isLocalStorage = mode === 'AGENT' && storageMode === 'LOCAL'
   const [input, setInput] = useState('')
   const [focusSignal, setFocusSignal] = useState(0)
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>()
   const [messages, setMessages] = useState<ChatMessage[]>(() => (isGuest ? guestDemoMessages : [welcomeMessage]))
+  const [localVersion, setLocalVersion] = useState(0)
   const [useLocalMessages, setUseLocalMessages] = useState(true)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [uploadingAttachments, setUploadingAttachments] = useState(false)
   const pendingId = useRef('')
+  const pendingUserMessage = useRef<ChatMessage | null>(null)
   const pendingConversationId = useRef<string | undefined>(undefined)
   const busy = useRef(false)
   const streamController = useRef<AbortController | null>(null)
 
+  const localConversations = useMemo(
+    () => {
+      void localVersion
+      return isLocalStorage ? listLocalAgentConversations(storageScope) : []
+    },
+    [isLocalStorage, storageScope, localVersion],
+  )
+
   const conversationsQuery = useQuery({
-    queryKey: ['mcp-conversations'],
-    queryFn: getMcpConversations,
-    enabled: !isGuest,
+    queryKey: ['mcp-conversations', mode],
+    queryFn: () => getMcpConversations(mode),
+    enabled: !isGuest && !isLocalStorage,
   })
 
   const messagesQuery = useQuery({
     queryKey: ['mcp-messages', activeConversationId],
     queryFn: () => getMcpMessages(activeConversationId!),
-    enabled: !isGuest && Boolean(activeConversationId),
+    enabled: !isGuest && !isLocalStorage && Boolean(activeConversationId),
   })
 
   const modelQuery = useQuery({
@@ -94,17 +122,22 @@ export function useAssistantChatSession({
     enabled: !isGuest,
   })
 
-  const conversations = conversationsQuery.data?.content ?? []
-  const quotaUnavailable = !isGuest && !modelQuery.isLoading && (
+  const conversations = isLocalStorage
+    ? localConversations
+    : (conversationsQuery.data?.content ?? [])
+  const quotaUnavailable = !isGuest && !usesIndependentChannel && !modelQuery.isLoading && (
     modelQuery.data?.usage?.memberAllocatedTokens == null
     || (modelQuery.data.usage.memberRemainingTokens ?? 0) <= 0
   )
   const disabled = isGuest || quotaUnavailable
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId)
 
-  const displayedMessages = useMemo(() => (useLocalMessages ? messages : (messagesQuery.data?.content ?? [])
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map(toChatMessage)), [useLocalMessages, messages, messagesQuery.data])
+  const displayedMessages = useMemo(() => {
+    if (isLocalStorage || useLocalMessages) return messages
+    return (messagesQuery.data?.content ?? [])
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .map(toChatMessage)
+  }, [isLocalStorage, useLocalMessages, messages, messagesQuery.data])
   const chatMessages = displayedMessages.filter((message) => message.id !== 'welcome')
 
   const chatMutation = useMutation({
@@ -142,7 +175,7 @@ export function useAssistantChatSession({
     onSuccess: (response) => {
       setActiveConversationId(response.conversationId)
       setAttachments([])
-      setMessages((current) => current.map((message) => message.id !== pendingId.current ? message : {
+      const finalAssistantMessage: ChatMessage = {
         id: response.messageId,
         role: 'assistant',
         content: response.content,
@@ -150,10 +183,24 @@ export function useAssistantChatSession({
         traces: response.toolTraces,
         data: response.data,
         createdAt: response.createdAt,
+      }
+      setMessages((current) => current.map((message) => message.id !== pendingId.current ? message : {
+        ...finalAssistantMessage,
         error: message.error,
       }))
-      void queryClient.invalidateQueries({ queryKey: ['mcp-conversations'] })
-      void queryClient.invalidateQueries({ queryKey: ['mcp-messages', response.conversationId] })
+      if (isLocalStorage && pendingUserMessage.current) {
+        saveLocalAgentTurn(
+          storageScope,
+          response.conversationId,
+          pendingUserMessage.current,
+          finalAssistantMessage,
+          isDesktopClient() ? 'DESKTOP' : 'WEB',
+        )
+        setLocalVersion((count) => count + 1)
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ['mcp-conversations', mode] })
+        void queryClient.invalidateQueries({ queryKey: ['mcp-messages', response.conversationId] })
+      }
       void queryClient.invalidateQueries({ queryKey: ['agent-runs'] })
       void queryClient.invalidateQueries({ queryKey: ['approvals'] })
       void queryClient.invalidateQueries({ queryKey: ['follow-ups'] })
@@ -167,10 +214,13 @@ export function useAssistantChatSession({
         streaming: false,
         error: error instanceof Error ? error.message : '连接中断，请查看历史记录确认执行结果。',
       }))
-      void queryClient.invalidateQueries({ queryKey: ['mcp-conversations'] })
+      if (!isLocalStorage) {
+        void queryClient.invalidateQueries({ queryKey: ['mcp-conversations', mode] })
+      }
     },
     onSettled: () => {
       busy.current = false
+      pendingUserMessage.current = null
       streamController.current = null
     },
   })
@@ -230,13 +280,24 @@ export function useAssistantChatSession({
     pendingId.current = crypto.randomUUID()
     setUseLocalMessages(true)
     const initialThinking = buildInitialThinkingChain(mode, content, pendingProgressText)
-    setMessages([...displayedMessages, {
+    const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content,
       attachments: submittedAttachments,
       createdAt: new Date().toISOString(),
-    }, {
+    }
+    pendingUserMessage.current = userMessage
+    const localHistory = isLocalStorage
+      ? displayedMessages
+        .filter((item) => item.id !== 'welcome' && item.content.trim())
+        .slice(-12)
+        .map((item) => ({
+          role: item.role,
+          content: item.content.slice(0, 3500),
+        }))
+      : undefined
+    setMessages([...displayedMessages, userMessage, {
       id: pendingId.current,
       role: 'assistant',
       content: '',
@@ -244,7 +305,7 @@ export function useAssistantChatSession({
       thinkingLabel: initialThinking.title,
       progress: initialThinking.steps[initialThinking.steps.length - 1],
       progressSteps: initialThinking.steps,
-      data: { assistantMode: mode },
+      data: { assistantMode: mode, storageMode: isLocalStorage ? 'LOCAL' : 'CLOUD' },
       createdAt: new Date().toISOString(),
     }])
     setInput('')
@@ -254,6 +315,9 @@ export function useAssistantChatSession({
       message: content,
       attachmentIds: submittedAttachments.map((file) => file.id),
       mode,
+      model: selectedModel || undefined,
+      storageMode: isLocalStorage ? 'LOCAL' : 'CLOUD',
+      history: localHistory,
     })
   }
 
@@ -275,10 +339,36 @@ export function useAssistantChatSession({
 
   function selectConversation(conversationId: string) {
     setActiveConversationId(conversationId)
-    setUseLocalMessages(false)
+    if (isLocalStorage) {
+      setUseLocalMessages(true)
+      const stored = getLocalAgentMessages(storageScope, conversationId)
+      setMessages(stored.length > 0 ? stored : [welcomeMessage])
+    } else {
+      setUseLocalMessages(false)
+    }
   }
 
-  const readableStatus = isGuest ? '演示会话' : chatMutation.isPending ? '正在执行' : activeConversation ? '历史已保存' : '新会话'
+  async function deleteConversation(conversationId: string) {
+    if (chatMutation.isPending) return
+    if (isLocalStorage) {
+      deleteLocalAgentConversation(storageScope, conversationId)
+      setLocalVersion((count) => count + 1)
+    } else {
+      await deleteMcpConversation(conversationId)
+      await queryClient.invalidateQueries({ queryKey: ['mcp-conversations', mode] })
+    }
+    if (activeConversationId === conversationId) {
+      startNewConversation()
+    }
+  }
+
+  const readableStatus = isGuest
+    ? '演示会话'
+    : chatMutation.isPending
+      ? '正在执行'
+      : activeConversation
+        ? (isLocalStorage ? '仅存本地' : '历史已保存')
+        : (isLocalStorage ? '新建本地会话' : '新会话')
 
   return {
     isGuest,
@@ -304,6 +394,7 @@ export function useAssistantChatSession({
     applyToolTemplate,
     startNewConversation,
     selectConversation,
+    deleteConversation,
   }
 }
 

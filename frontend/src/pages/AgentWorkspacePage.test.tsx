@@ -10,13 +10,14 @@ import { AgentWorkspacePage } from './AgentWorkspacePage'
 
 vi.mock('../auth/use-auth', () => ({
   useIsGuest: () => false,
-  useAuth: () => ({ role: 'OWNER', memberId: 'member-1' }),
+  useAuth: () => ({ role: 'OWNER', memberId: 'member-1', organizationId: 'org-1' }),
 }))
 
 vi.mock('../api/mcp-chat-api', () => ({
   isDesktopClient: vi.fn(() => false),
   getMcpCapabilities: vi.fn(),
   getMcpConversations: vi.fn(),
+  deleteMcpConversation: vi.fn(),
   getMcpMessages: vi.fn(),
   streamMcpChatMessage: vi.fn(),
 }))
@@ -48,6 +49,7 @@ function mountAgentWorkspace() {
 
 describe('AgentWorkspacePage', () => {
   beforeEach(() => {
+    window.localStorage.clear()
     vi.mocked(isDesktopClient).mockReturnValue(false)
     vi.mocked(getMcpCapabilities).mockResolvedValue({
       planCode: 'STARTER',
@@ -218,5 +220,102 @@ describe('AgentWorkspacePage', () => {
 
     expect(await screen.findByText('桌面客户端专享')).toBeInTheDocument()
     expect(screen.getByPlaceholderText(/自主 Agent 模式/)).toBeInTheDocument()
+  })
+
+  it('支持左下角一键切换 Agent 模型、展示独立 Agent 用量，并可切换本地存储模式', async () => {
+    vi.mocked(isDesktopClient).mockReturnValue(true)
+    vi.mocked(getAiModelStatus).mockResolvedValue({
+      provider: 'QWEN',
+      model: 'qwen4-max',
+      embeddingModel: 'qwen3.7-text-embedding-flash',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      apiKeyConfigured: true,
+      ready: true,
+      status: 'READY',
+      agent: {
+        enabled: true,
+        provider: 'VOLCENGINE_ARK',
+        model: 'doubao-seed-2.1-pro',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
+        apiKeyConfigured: true,
+        ready: true,
+        status: 'READY',
+        availableModels: ['doubao-seed-2.1-pro', 'deepseek-v4-pro', 'kimi-k3'],
+      },
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedInputTokens: 0,
+        totalTokens: 150,
+        successfulCalls: 3,
+        lastCalledAt: '2026-11-18T08:00:00Z',
+        remainingTokens: null,
+        remainingStatus: 'CHAT_API_DOES_NOT_RETURN_ACCOUNT_REMAINING',
+        // 即便 MCP 免费对话额度为 0，Agent 独立通道也应正常可用
+        memberAllocatedTokens: 0,
+        memberUsedTokens: 0,
+        memberRemainingTokens: 0,
+        agent: {
+          inputTokens: 1200,
+          outputTokens: 800,
+          cachedInputTokens: 0,
+          totalTokens: 2000,
+          successfulCalls: 6,
+          lastCalledAt: '2026-11-18T09:00:00Z',
+          models: [{
+            provider: 'VOLCENGINE_ARK',
+            model: 'doubao-seed-2.1-pro',
+            inputTokens: 1200,
+            outputTokens: 800,
+            cachedInputTokens: 0,
+            totalTokens: 2000,
+            successfulCalls: 6,
+            lastCalledAt: '2026-11-18T09:00:00Z',
+          }],
+        },
+      },
+    })
+    vi.mocked(streamMcpChatMessage).mockResolvedValue({
+      conversationId: 'local-conv-1',
+      messageId: 'local-msg-1',
+      role: 'assistant',
+      content: '已使用 deepseek-v4-pro 在本地会话完成分析。',
+      reasoningSummary: '本地会话不写入服务器表',
+      toolTraces: [],
+      data: { assistantMode: 'AGENT', storageMode: 'LOCAL' },
+      createdAt: '2026-11-18T09:05:00Z',
+    })
+    const user = userEvent.setup()
+    mountAgentWorkspace()
+
+    // 独立 Agent 用量面板存在，且不出现 MCP Token 分配按钮
+    expect(await screen.findByLabelText('自主 Agent 用量统计')).toBeInTheDocument()
+    expect(await screen.findByText('独立通道已就绪')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Token 分配' })).not.toBeInTheDocument()
+
+    // 左下角一键选模型：从 doubao-seed-2.1-pro 切换到 deepseek-v4-pro
+    await user.click(screen.getByRole('button', { name: '选择 Agent 模型' }))
+    await user.click(screen.getByRole('option', { name: /deepseek-v4-pro/ }))
+
+    // 切换到「存本地」会话存储模式
+    await user.click(screen.getByRole('button', { name: /存本地/ }))
+    expect(screen.getByText(/对话仅保存于当前设备本地/)).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText(/自主 Agent 模式/), '帮我梳理本地草稿')
+    await user.click(screen.getByRole('button', { name: /发送指令/ }))
+
+    await waitFor(() => expect(streamMcpChatMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'AGENT',
+        model: 'deepseek-v4-pro',
+        storageMode: 'LOCAL',
+      }),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    ))
+    expect(await screen.findByText('已使用 deepseek-v4-pro 在本地会话完成分析。')).toBeInTheDocument()
+    // 本地会话应立即出现在左侧会话列表中，并带删除按钮
+    expect(await screen.findByRole('button', { name: /^帮我梳理本地草稿/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '删除会话 帮我梳理本地草稿' })).toBeInTheDocument()
   })
 })

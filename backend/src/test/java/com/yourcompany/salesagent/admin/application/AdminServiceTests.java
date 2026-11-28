@@ -161,7 +161,42 @@ class AdminServiceTests {
 
 		assertThat(result.remainingTokens()).isEqualTo(88_000L);
 		verify(mapper).upsertMemberTokenQuota(
-				ORGANIZATION_ID, SALES_MEMBER_ID, 100_000L, OWNER_MEMBER_ID, NOW);
+				ORGANIZATION_ID, SALES_MEMBER_ID, 100_000L, null, OWNER_MEMBER_ID, NOW);
+	}
+
+	@Test
+	void ownerCanAssignSeparateEmbeddingBudgetAndMemberQuota() {
+		var mapper = mock(AdminMapper.class);
+		var current = new AdminMemberRow(
+				SALES_MEMBER_ID, SALES_USER_ID, "sales@example.com", "销售成员", MemberRole.SALES, MemberStatus.ACTIVE,
+				NOW.minusSeconds(3600), null, NOW.minusSeconds(3600), 100_000L, 12_000L, null, 0L);
+		var updated = new AdminMemberRow(
+				SALES_MEMBER_ID, SALES_USER_ID, "sales@example.com", "销售成员", MemberRole.SALES, MemberStatus.ACTIVE,
+				NOW.minusSeconds(3600), null, NOW.minusSeconds(3600), 100_000L, 12_000L, 50_000L, 5_000L);
+		when(mapper.lockOrganization(ORGANIZATION_ID)).thenReturn(1);
+		when(mapper.selectTeamTokenBudget(ORGANIZATION_ID)).thenReturn(200_000L);
+		when(mapper.selectTeamEmbeddingTokenBudget(ORGANIZATION_ID)).thenReturn(100_000L);
+		when(mapper.sumMemberTokenQuotas(ORGANIZATION_ID)).thenReturn(100_000L);
+		when(mapper.sumMemberEmbeddingTokenQuotas(ORGANIZATION_ID)).thenReturn(0L);
+		when(mapper.selectMember(ORGANIZATION_ID, SALES_MEMBER_ID)).thenReturn(current, updated);
+
+		var budget = service(mapper).updateTeamTokenBudget(
+				principal("OWNER", OWNER_MEMBER_ID),
+				new TeamTokenBudgetRequest(200_000L, 100_000L));
+		assertThat(budget.totalTokens()).isEqualTo(200_000L);
+		assertThat(budget.embeddingTotalTokens()).isEqualTo(100_000L);
+		assertThat(budget.embeddingUnallocatedTokens()).isEqualTo(100_000L);
+
+		var result = service(mapper).updateMemberTokenQuota(
+				principal("OWNER", OWNER_MEMBER_ID),
+				SALES_MEMBER_ID,
+				new com.yourcompany.salesagent.admin.api.MemberTokenQuotaRequest(null, 50_000L, false, true));
+
+		assertThat(result.allocatedTokens()).isEqualTo(100_000L);
+		assertThat(result.embeddingAllocatedTokens()).isEqualTo(50_000L);
+		assertThat(result.embeddingRemainingTokens()).isEqualTo(45_000L);
+		verify(mapper).upsertMemberTokenQuota(
+				ORGANIZATION_ID, SALES_MEMBER_ID, 100_000L, 50_000L, OWNER_MEMBER_ID, NOW);
 	}
 
 	@Test

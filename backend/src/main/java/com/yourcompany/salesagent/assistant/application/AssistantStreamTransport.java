@@ -18,6 +18,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import com.yourcompany.salesagent.ai.application.AiModelConfigurationException;
+import com.yourcompany.salesagent.ai.application.TokenQuotaExceededException;
 import com.yourcompany.salesagent.assistant.api.AssistantChatRequest;
 import com.yourcompany.salesagent.auth.security.AuthPrincipal;
 
@@ -63,8 +65,9 @@ public class AssistantStreamTransport {
 							() -> send.accept("ping", Map.of()), 15, 15, TimeUnit.SECONDS);
 					// 断开显示连接不重放或回滚已提交的业务动作，结果仍存入会话历史。
 					service.streamChat(principal, conversationId, request.message(), request.attachmentIds(),
-							request.resolvedMode(), desktopClient, send);
-				} catch (AssistantWorkflowException exception) {
+							request.resolvedMode(), request.model(), request.resolvedStorageMode(), request.history(),
+							desktopClient, send);
+				} catch (AssistantWorkflowException | TokenQuotaExceededException | AiModelConfigurationException exception) {
 					send.accept("error", Map.of("message", exception.getMessage()));
 				} catch (RuntimeException exception) {
 					log.warn("MCP assistant stream failed before completion", exception);

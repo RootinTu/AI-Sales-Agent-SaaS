@@ -30,7 +30,7 @@ class AssistantConversationMapperXmlTests {
 		}
 
 		assertThat(configuration.getResultMap("com.yourcompany.salesagent.assistant.infrastructure.AssistantConversationMapper.ConversationMap")
-				.getConstructorResultMappings()).hasSize(11);
+				.getConstructorResultMappings()).hasSize(13);
 		assertThat(configuration.getResultMap("com.yourcompany.salesagent.assistant.infrastructure.AssistantConversationMapper.MessageMap")
 				.getConstructorResultMappings()).hasSize(9);
 	}

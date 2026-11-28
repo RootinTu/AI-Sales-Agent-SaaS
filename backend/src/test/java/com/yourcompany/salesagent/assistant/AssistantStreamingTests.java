@@ -373,6 +373,60 @@ class AssistantStreamingTests {
 				argThat(hist -> !hist.isEmpty() && String.valueOf(hist.get(0).get("content")).contains("昨天聊过云岚科技")));
 	}
 
+	@Test
+	void autonomousAgentLocalStorageSkipsDatabasePersistenceAndUsesClientHistory() {
+		when(mapper.selectOrganizationPlanCode(principal.organizationId())).thenReturn("SVIP");
+		when(settings.resolveAgentRuntimeConfiguration(principal.organizationId(), principal.memberId(), "deepseek-v4-pro"))
+				.thenReturn(new AiModelService.ResolvedAgentModel(
+						new AiModelRuntimeConfiguration("VOLCENGINE_ARK", "deepseek-v4-pro", "https://ark.cn-beijing.volces.com/api/plan/v3", "ark-key"),
+						true));
+		var step1 = new AiOrchestrationClient.AgentStepPlan(
+				"ANSWER", "直接基于本地上下文回答", "已收到你的本地追问。", null, Map.of(),
+				0.95, true, List.of(), new ModelUsage(15, 10, 25, 0L, null), "req-local-1", "deepseek-v4-pro");
+		when(model.planAgentStep(any(), anyString(), eq("AGENT"), anyMap(), anyList(), anyList(), anyList()))
+				.thenReturn(step1);
+		when(model.streamAssistantReplyWithUsage(any(), anyString(), anyString(), eq("AGENT"), anyList()))
+				.thenReturn(Flux.just(new AiOrchestrationClient.StreamChunk("已收到你的本地追问。", new ModelUsage(10, 8, 18, 0L, null), "req-local-2", "deepseek-v4-pro")));
+
+		var localHistory = List.of(new AssistantChatRequest.LocalHistoryMessage("user", "上一轮讨论了华东客户报价"));
+		var request = new AssistantChatRequest(conversationId, "继续补充风险点", null, "DESKTOP", "AGENT", "deepseek-v4-pro", "LOCAL", localHistory);
+		var resolvedId = service.beginStream(principal, request, true);
+		assertThat(resolvedId).isEqualTo(conversationId);
+		service.streamChat(principal, resolvedId, request.message(), null, "AGENT", "deepseek-v4-pro", "LOCAL", localHistory, true, this::receive);
+
+		assertThat(saved.content()).isEqualTo("已收到你的本地追问。");
+		assertThat(saved.data()).containsEntry("storageMode", "LOCAL");
+		verify(mapper, never()).insertConversation(any(), any(), any(), any(), any(), any(), any(), any(), any());
+		verify(mapper, never()).insertMessage(any(), any(), any(), any(), any(), any(), any(), any(), any());
+		verify(mapper, never()).touchConversation(any(), any(), any(), any());
+		verify(model).planAgentStep(
+				argThat(cfg -> "deepseek-v4-pro".equals(cfg.model())),
+				anyString(), eq("AGENT"), anyMap(), anyList(),
+				argThat(hist -> hist.size() == 1 && String.valueOf(hist.get(0).get("content")).contains("华东客户报价")),
+				anyList());
+	}
+
+	@Test
+	void lightModeConversationSetsSevenDayExpiryAndRejectsCrossModeReuse() {
+		var now = Instant.parse("2026-09-14T09:00:00Z");
+		var agentRow = new AssistantConversationRow(
+				conversationId, principal.organizationId(), principal.userId(), principal.memberId(),
+				"Agent 会话", "DESKTOP", "AGENT", "OPEN", now, null, now, now, 0);
+		when(mapper.selectConversation(principal.organizationId(), conversationId)).thenReturn(agentRow);
+
+		assertThatThrownBy(() -> service.beginStream(principal, new AssistantChatRequest(conversationId, "查待审批", null, "WEB", "LIGHT")))
+				.isInstanceOf(AssistantWorkflowException.class)
+				.hasMessageContaining("其他助手模式");
+
+		var expiredRow = new AssistantConversationRow(
+				conversationId, principal.organizationId(), principal.userId(), principal.memberId(),
+				"过期会话", "WEB", "LIGHT", "OPEN", now.minusSeconds(700_000), now.minusSeconds(60), now.minusSeconds(700_000), now.minusSeconds(700_000), 0);
+		when(mapper.selectConversation(principal.organizationId(), conversationId)).thenReturn(expiredRow);
+		assertThatThrownBy(() -> service.beginStream(principal, new AssistantChatRequest(conversationId, "查待审批", null, "WEB", "LIGHT")))
+				.isInstanceOf(AssistantWorkflowException.class)
+				.hasMessageContaining("7 天");
+	}
+
 	private static AiOrchestrationClient.AssistantPlan plan(String intent, String toolName, Map<String, Object> arguments) {
 		return new AiOrchestrationClient.AssistantPlan(
 				intent, "", toolName, arguments, 0.95, false, List.of(),
