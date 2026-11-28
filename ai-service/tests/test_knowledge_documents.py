@@ -214,10 +214,11 @@ def test_hybrid_ranking_recalls_semantic_match_without_lexical_overlap():
         ),
         KnowledgeCandidate(
             id="weak-unrelated",
-            title="React 前端笔记",
-            content="组件状态更新与 TypeScript 泛型推导。",
+            title="React 前端核心笔记",
+            content="React 核心组件状态更新，怎么推导 TypeScript 泛型。",
             vector_score=0.45,
             vector_rank=2,
+            lexical_rank=1,
         ),
         KnowledgeCandidate(
             id="low-noise",
@@ -227,6 +228,20 @@ def test_hybrid_ranking_recalls_semantic_match_without_lexical_overlap():
             vector_rank=10,
         ),
     ]
-    sources = rank_candidates("如何给重点客户申请打折", candidates, top_k=3)
+    sources = rank_candidates("怎么给核心重点客户申请打折", candidates, top_k=3)
     assert [source.id for source in sources] == ["semantic-only"]
     assert sources[0].score > 0.5
+
+
+def test_prune_uncited_sources_keeps_only_cited_and_renumbers():
+    from app.features.knowledge.schemas import KnowledgeSource
+    from app.features.knowledge.workflow import prune_uncited_sources
+
+    sources = [
+        KnowledgeSource(id="s1", title="大客户优惠政策", excerpt="A", score=0.8),
+        KnowledgeSource(id="s2", title="无关 React 笔记", excerpt="B", score=0.4),
+        KnowledgeSource(id="s3", title="审批流程补充", excerpt="C", score=0.6),
+    ]
+    content, pruned = prune_uncited_sources("适用条件为 50 万以上 [资料 1]，并参考补充规定 [资料 3]。", sources)
+    assert [source.id for source in pruned] == ["s1", "s3"]
+    assert content == "适用条件为 50 万以上 [资料 1]，并参考补充规定 [资料 2]。"

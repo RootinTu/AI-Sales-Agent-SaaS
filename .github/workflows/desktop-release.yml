@@ -14,7 +14,7 @@ on:
       release_tag:
         description: "GitHub Release tag，例如 desktop-v0.1.5"
         required: true
-        default: "desktop-v1.5.4"
+        default: "desktop-v1.5.5"
       prerelease:
         description: "是否发布为预发布版本"
         required: true
@@ -81,14 +81,12 @@ jobs:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: AI Sales Agent Desktop ${{ inputs.release_tag || github.ref_name }}
           releaseBody: |
-            AI Sales Agent 1.5.4。
+            AI Sales Agent 1.5.5。
 
-            - 助手结果输出默认支持 Markdown 排版渲染，全面优化对话 UI，移除多余嵌套背景与双层边框。
-            - 新增分场景动态思考链：知识问答、业务工作流与自主 Agent 按不同用法实时展示对应思考进度。
-            - 严格收紧 MCP 助手能力边界：聚焦简单问答与标准工作流，自主 Agent 能力统一收口至顶部「自主 Agent」独立空间。
-            - 优化 pgvector 知识库语义召回降噪，过滤弱相关无关文档引用；同步桌面端自动更新地址至 RootinTu/AI-Sales-Agent-SaaS。
+            - 企业知识库三道防线强降噪：修复通用双字绕过向量过滤的问题，新增回答实引来源裁剪与重编号，彻底剔除不相关资料干扰。
+            - 句末行内椭圆形引用徽标：正文中每句末尾的引用自动渲染为不折行的可点击椭圆小胶囊，点击直达对应知识库文档，移除底部冗余列表。
 
-            完整发布说明见仓库 docs/releases/1.5.4.md。
+            完整发布说明见仓库 docs/releases/1.5.5.md。
 
             - Windows 安装包由 Tauri / NSIS 生成。
             - latest.json 用于桌面端自动更新。

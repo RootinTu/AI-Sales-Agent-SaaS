@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getMcpCapabilities,
@@ -54,9 +55,11 @@ function renderMcpAssistantPage() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
-    <QueryClientProvider client={queryClient}>
-      <McpAssistantPage />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <McpAssistantPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -139,15 +142,18 @@ describe('McpAssistantPage', () => {
     expect(screen.getByLabelText('助手执行进度')).toBeInTheDocument()
   })
 
-  it('结果输出默认以 Markdown 渲染标题、加粗与列表', async () => {
+  it('结果输出默认以 Markdown 渲染标题、加粗与列表，并将句末引用渲染为椭圆形胶囊', async () => {
     const response: AssistantChatResponse = {
       conversationId: 'conversation-md',
       messageId: 'message-md',
       role: 'assistant',
-      content: '## 可确认的内容\n\n- **适用条件**：年度采购额超过 50 万元',
+      content: '## 可确认的内容\n\n- **适用条件**：年度采购额超过 50 万元 [资料 1]',
       reasoningSummary: '检索企业知识库并根据资料回答。',
       toolTraces: [{ name: 'knowledge.query', status: 'SUCCEEDED', summary: '引用 1 个知识片段' }],
-      data: { assistantMode: 'LIGHT' },
+      data: {
+        assistantMode: 'LIGHT',
+        knowledgeSources: [{ documentId: 'doc-1', title: '大客户优惠政策', pageNumber: null }],
+      },
       createdAt: '2026-09-05T08:00:00Z',
     }
     vi.mocked(streamMcpChatMessage).mockResolvedValue(response)
@@ -160,6 +166,10 @@ describe('McpAssistantPage', () => {
     expect(await screen.findByRole('heading', { level: 2, name: '可确认的内容' })).toBeInTheDocument()
     expect(screen.getByText('适用条件').tagName).toBe('STRONG')
     expect(screen.queryByText('## 可确认的内容')).not.toBeInTheDocument()
+    const pill = screen.getByRole('link', { name: '引用来源：大客户优惠政策' })
+    expect(pill).toHaveClass('markdown-citation-pill')
+    expect(pill).toHaveAttribute('href', '/app/knowledge?document=doc-1')
+    expect(screen.queryByLabelText('知识库引用')).not.toBeInTheDocument()
   })
 
   it('点击工具卡片后把调用模板填入输入框', async () => {
