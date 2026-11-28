@@ -2,6 +2,7 @@ package com.yourcompany.salesagent.ai.infrastructure;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -25,6 +26,34 @@ public interface ModelCallMapper {
 	ModelUsageSummaryRow selectUsageSummary(
 			@Param("organizationId") UUID organizationId,
 			@Param("provider") String provider);
+
+	@Select("""
+			SELECT COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+			       COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+			       COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+			       COUNT(*)::bigint AS successful_calls,
+			       MAX(completed_at) AS last_called_at
+			FROM model_call
+			WHERE organization_id = #{organizationId}
+			  AND status = 'SUCCEEDED'
+			""")
+	ModelUsageSummaryRow selectAllUsageSummary(@Param("organizationId") UUID organizationId);
+
+	@Select("""
+			SELECT provider,
+			       model,
+			       COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+			       COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+			       COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+			       COUNT(*)::bigint AS successful_calls,
+			       MAX(completed_at) AS last_called_at
+			FROM model_call
+			WHERE organization_id = #{organizationId}
+			  AND status = 'SUCCEEDED'
+			GROUP BY provider, model
+			ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC, model ASC
+			""")
+	List<ModelUsageBreakdownRow> selectUsageByModel(@Param("organizationId") UUID organizationId);
 
 	@Select("""
 			SELECT quota.allocated_tokens,

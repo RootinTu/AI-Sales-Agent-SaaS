@@ -4222,6 +4222,91 @@ input:focus-visible {
   color: var(--danger);
 }
 
+.settings-subpanel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--surface-muted, #f8fafc);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-subpanel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-subpanel-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.settings-subpanel-header p {
+  margin: 4px 0 0;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.settings-inline-switch {
+  display: inline-flex;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-inline-switch input {
+  width: 14px !important;
+  height: 14px;
+  accent-color: var(--blue-600);
+}
+
+.settings-subpanel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-subpanel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.settings-usage-table-wrap {
+  overflow-x: auto;
+}
+
+.settings-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+
+.settings-usage-table th,
+.settings-usage-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-usage-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.settings-usage-table code {
+  font-size: 9.5px;
+}
+
 .setting-switch-list > label {
   min-height: 58px;
   display: flex;

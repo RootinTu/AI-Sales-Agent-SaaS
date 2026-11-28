@@ -4,11 +4,12 @@ import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.yourcompany.salesagent.ai.application.AiModelService;
@@ -45,8 +46,18 @@ public class AiModelController {
 	}
 
 	@PostMapping("/test")
-	public AiModelTestResponse testConnection(Authentication authentication) {
-		return modelService.testConnection(organizationId(authentication));
+	public AiModelTestResponse testConnection(
+			Authentication authentication,
+			@RequestParam(defaultValue = "default") String target) {
+		var orgId = organizationId(authentication);
+		return "agent".equalsIgnoreCase(target)
+				? modelService.testAgentConnection(orgId)
+				: modelService.testConnection(orgId);
+	}
+
+	@PostMapping("/agent/test")
+	public AiModelTestResponse testAgentConnection(Authentication authentication) {
+		return modelService.testAgentConnection(organizationId(authentication));
 	}
 
 	private UUID organizationId(Authentication authentication) {

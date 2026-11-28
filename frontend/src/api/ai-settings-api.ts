@@ -1,9 +1,32 @@
 import { getJson, requestJson } from './axios-client'
 
+export type AiModelProvider = 'QWEN' | 'VOLCENGINE_ARK' | 'OPENAI_COMPATIBLE'
 export type AiModelStatusCode = 'READY' | 'MISSING_API_KEY' | 'ENCRYPTION_KEY_UNAVAILABLE'
+export type AiAgentModelStatusCode = 'READY' | 'INHERIT_DEFAULT' | 'ENCRYPTION_KEY_UNAVAILABLE'
+
+export interface AiAgentModelStatus {
+  enabled: boolean
+  provider: AiModelProvider
+  model: string
+  baseUrl: string
+  apiKeyConfigured: boolean
+  ready: boolean
+  status: AiAgentModelStatusCode
+}
+
+export interface AiModelUsageBreakdownItem {
+  provider: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  totalTokens: number
+  successfulCalls: number
+  lastCalledAt: string | null
+}
 
 export interface AiModelStatus {
-  provider: 'QWEN'
+  provider: AiModelProvider
   model: string
   embeddingModel?: string
   baseUrl: string
@@ -11,6 +34,7 @@ export interface AiModelStatus {
   ready: boolean
   status: AiModelStatusCode
   usage?: AiModelUsage
+  agent?: AiAgentModelStatus
 }
 
 export interface AiModelUsage {
@@ -25,10 +49,11 @@ export interface AiModelUsage {
   memberAllocatedTokens: number | null
   memberUsedTokens: number
   memberRemainingTokens: number | null
+  models?: AiModelUsageBreakdownItem[]
 }
 
 export interface AiModelTestResult {
-  provider: 'QWEN'
+  provider: AiModelProvider | string
   model: string
   status: 'CONNECTED'
   responsePreview: string
@@ -36,11 +61,16 @@ export interface AiModelTestResult {
 }
 
 export interface AiModelUpdateInput {
-  provider: 'QWEN'
+  provider: AiModelProvider
   model: string
   embeddingModel?: string
   baseUrl: string
   apiKey?: string
+  agentEnabled?: boolean
+  agentProvider?: AiModelProvider
+  agentModel?: string
+  agentBaseUrl?: string
+  agentApiKey?: string
 }
 
 export function getAiModelStatus() {
@@ -56,4 +86,8 @@ export function saveAiModelConfiguration(input: AiModelUpdateInput) {
 
 export function testAiModelConnection() {
   return requestJson<AiModelTestResult>('/api/v1/ai/model/test', { method: 'POST' })
+}
+
+export function testAgentModelConnection() {
+  return requestJson<AiModelTestResult>('/api/v1/ai/model/agent/test', { method: 'POST' })
 }

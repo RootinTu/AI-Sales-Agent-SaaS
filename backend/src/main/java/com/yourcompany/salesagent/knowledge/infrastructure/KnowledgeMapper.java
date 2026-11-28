@@ -35,6 +35,8 @@ public interface KnowledgeMapper {
 	List<KnowledgeVectorCandidateRow> selectVectorCandidates(@Param("org") UUID org, @Param("member") UUID member,
 			@Param("queryEmbedding") String queryEmbedding, @Param("embeddingModel") String embeddingModel,
 			@Param("document") UUID document);
+	List<KnowledgeChunkResponse> selectAdjacentChunks(@Param("org") UUID org, @Param("member") UUID member,
+			@Param("documentId") UUID documentId, @Param("indexes") List<Integer> indexes);
 	List<KnowledgeDocumentRow> selectDocumentsNeedingEmbedding(@Param("org") UUID org, @Param("member") UUID member,
 			@Param("embeddingModel") String embeddingModel, @Param("limit") int limit);
 	int sourceAvailable(@Param("org") UUID org, @Param("member") UUID member, @Param("id") UUID id, @Param("revision") long revision);

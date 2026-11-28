@@ -245,3 +245,63 @@ def test_prune_uncited_sources_keeps_only_cited_and_renumbers():
     content, pruned = prune_uncited_sources("适用条件为 50 万以上 [资料 1]，并参考补充规定 [资料 3]。", sources)
     assert [source.id for source in pruned] == ["s1", "s3"]
     assert content == "适用条件为 50 万以上 [资料 1]，并参考补充规定 [资料 2]。"
+
+
+def test_prune_uncited_sources_clears_sources_on_explicit_refusal():
+    from app.features.knowledge.schemas import KnowledgeSource
+    from app.features.knowledge.workflow import prune_uncited_sources
+
+    sources = [
+        KnowledgeSource(id="s1", title="上海自贸区基本户规程", excerpt="A", score=0.6),
+        KnowledgeSource(id="s2", title="上海普通基本户说明", excerpt="B", score=0.5),
+    ]
+    content, pruned = prune_uncited_sources("当前知识库中没有相关记载，无法确认周六营业时间。", sources)
+    assert pruned == []
+    assert "无法确认" in content
+
+
+def test_rank_candidates_penalizes_deprecated_docs_unless_historical_query():
+    from app.features.knowledge.workflow import rank_candidates
+
+    candidates = [
+        KnowledgeCandidate(
+            id="draft-a06",
+            title="A06_成都分行工程款专用账户操作规程_修订稿",
+            content="文件状态 征求意见稿/从未生效。拟议改为系统自动终审。",
+            vector_score=0.78,
+            vector_rank=1,
+            metadata={"document_id": "doc-a06"},
+        ),
+        KnowledgeCandidate(
+            id="active-a02",
+            title="A02_成都分行建筑企业工程款专用账户操作规程_V1.2",
+            content="文件状态 现行有效。由开户网点运营主管复核，成都分行公司金融运营部终审。",
+            vector_score=0.72,
+            vector_rank=2,
+            metadata={"document_id": "doc-a02"},
+        ),
+    ]
+    normal_sources = rank_candidates("成都工程款专户最后要走到哪个部门，能不能系统自动终审？", candidates, top_k=2)
+    assert normal_sources[0].id == "active-a02"
+
+    historical_sources = rank_candidates("修订稿里对自动终审是怎么写的？", candidates, top_k=2)
+    assert historical_sources[0].id == "draft-a06"
+
+
+def test_rank_candidates_enforces_per_document_cap_and_includes_adjacent_chunk():
+    from app.features.knowledge.workflow import rank_candidates
+
+    candidates = [
+        KnowledgeCandidate(id="d1-c0", title="文档1", content="成都工程款专户适用范围", vector_score=0.88, vector_rank=1, metadata={"document_id": "d1", "chunk_index": 0}),
+        KnowledgeCandidate(id="d1-c1", title="文档1", content="单笔300万元、日累计1000万元、T+3", vector_score=0.84, metadata={"document_id": "d1", "chunk_index": 1, "adjacent": True}),
+        KnowledgeCandidate(id="d1-c2", title="文档1", content="持续监测条款", vector_score=0.83, vector_rank=2, metadata={"document_id": "d1", "chunk_index": 2}),
+        KnowledgeCandidate(id="d1-c3", title="文档1", content="归档留痕条款", vector_score=0.82, vector_rank=3, metadata={"document_id": "d1", "chunk_index": 3}),
+        KnowledgeCandidate(id="d2-c0", title="文档2", content="补充通知附加材料要求", vector_score=0.80, vector_rank=4, metadata={"document_id": "d2", "chunk_index": 0}),
+        KnowledgeCandidate(id="d3-c0", title="文档3", content="支付限额与工作日计算示例", vector_score=0.79, vector_rank=5, metadata={"document_id": "d3", "chunk_index": 0}),
+    ]
+    sources = rank_candidates("成都工程款专户限额和补充材料", candidates, top_k=4)
+    doc_ids = [s.metadata["document_id"] for s in sources]
+    assert doc_ids.count("d1") == 2
+    assert "d2" in doc_ids
+    assert "d3" in doc_ids
+    assert any(s.id == "d1-c1" for s in sources)

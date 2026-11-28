@@ -148,8 +148,10 @@ public class KnowledgeService {
 		var configuration = models.requireRuntimeConfiguration(actor.organizationId(), actor.memberId());
 		var merged = new LinkedHashMap<UUID, MergedCandidate>();
 		var searchStarted = clock.instant();
+		long embedMs = 0L, vectorDbMs = 0L, lexicalDbMs = 0L, adjacentDbMs = 0L;
 		try {
 			var prepared = python.prepareKnowledgeSearch(request.question(), configuration, models.defaultEmbeddingDimensions());
+			embedMs = Math.max(0L, clock.millis() - searchStarted.toEpochMilli());
 			if (prepared.embeddingUsage() != null) {
 				recordEmbedding(actor, configuration,
 						prepared.embeddingModel() != null ? prepared.embeddingModel() : configuration.embeddingModel(),
@@ -158,48 +160,69 @@ public class KnowledgeService {
 			var queryVector = formatVectorLiteral(prepared.queryEmbedding());
 			if (queryVector != null) {
 				var embeddingModel = prepared.embeddingModel() != null ? prepared.embeddingModel() : configuration.embeddingModel();
+				var vecStart = clock.millis();
 				var vectorHits = mapper.selectVectorCandidates(
 						actor.organizationId(), actor.memberId(), queryVector, embeddingModel, request.documentId());
+				vectorDbMs = Math.max(0L, clock.millis() - vecStart);
 				for (int i = 0; i < vectorHits.size(); i++) {
 					var hit = vectorHits.get(i);
-					merged.put(hit.id(), new MergedCandidate(hit.toChunk(), hit.vectorScore(), i + 1, null));
+					merged.put(hit.id(), new MergedCandidate(hit.toChunk(), hit.vectorScore(), i + 1, null, false));
 				}
 			}
 			var searchQuery = prepared.searchQuery();
 			if (searchQuery != null && !searchQuery.isBlank()) {
+				var lexStart = clock.millis();
 				var lexicalHits = mapper.selectCandidates(actor.organizationId(), actor.memberId(), searchQuery, request.documentId());
+				lexicalDbMs = Math.max(0L, clock.millis() - lexStart);
 				for (int i = 0; i < lexicalHits.size(); i++) {
 					var hit = lexicalHits.get(i);
 					int rank = i + 1;
 					merged.compute(hit.id(), (key, existing) -> existing == null
-							? new MergedCandidate(hit, null, null, rank)
-							: new MergedCandidate(existing.chunk(), existing.vectorScore(), existing.vectorRank(), rank));
+							? new MergedCandidate(hit, null, null, rank, false)
+							: new MergedCandidate(existing.chunk(), existing.vectorScore(), existing.vectorRank(), rank, existing.adjacent()));
 				}
 			}
 		}
 		catch (PythonAiClient.PythonAiException e) { throw new AiModelConnectionException("知识检索服务暂不可用，请稍后重试", e); }
 		if (merged.isEmpty()) return noSources();
-		var candidates = merged.values().stream().limit(60).toList();
+		var adjStart = clock.millis();
+		expandAdjacentChunks(actor, merged);
+		adjacentDbMs = Math.max(0L, clock.millis() - adjStart);
+		var candidates = merged.values().stream().limit(66).toList();
 		var payload = candidates.stream().map(candidate -> {
 			var item = new LinkedHashMap<String, Object>();
+			var metadata = new LinkedHashMap<String, Object>();
+			metadata.put("document_id", candidate.chunk().documentId().toString());
+			metadata.put("chunk_index", candidate.chunk().chunkIndex());
+			if (candidate.chunk().pageNumber() != null) metadata.put("page_number", candidate.chunk().pageNumber());
+			if (candidate.adjacent()) metadata.put("adjacent", true);
 			item.put("id", candidate.chunk().id().toString());
 			item.put("title", candidate.chunk().title());
 			item.put("content", candidate.chunk().content());
+			item.put("metadata", metadata);
 			if (candidate.vectorScore() != null) item.put("vector_score", candidate.vectorScore());
 			if (candidate.vectorRank() != null) item.put("vector_rank", candidate.vectorRank());
 			if (candidate.lexicalRank() != null) item.put("lexical_rank", candidate.lexicalRank());
 			return (Map<String, Object>) item;
 		}).toList();
+		var retrievalTelemetry = new LinkedHashMap<String, Object>();
+		retrievalTelemetry.put("questionCharacters", request.question().length());
+		retrievalTelemetry.put("embedMs", embedMs);
+		retrievalTelemetry.put("vectorDbMs", vectorDbMs);
+		retrievalTelemetry.put("lexicalDbMs", lexicalDbMs);
+		retrievalTelemetry.put("adjacentDbMs", adjacentDbMs);
+		retrievalTelemetry.put("retrievalTotalMs", embedMs + vectorDbMs + lexicalDbMs + adjacentDbMs);
+		retrievalTelemetry.put("candidateCount", candidates.size());
 		var started = clock.instant();
 		PythonAiClient.PythonKnowledgeAnswer answer;
 		try {
 			answer = python.answerKnowledge(configuration, request.question(), payload);
 		}
 		catch (RuntimeException e) {
-			record(actor, configuration, request.question(), null, started, "FAILED");
+			record(actor, configuration, retrievalTelemetry, null, started, "FAILED");
 			throw new AiModelConnectionException("知识库问答失败，请检查模型配置和 AI 服务状态", e);
 		}
-		record(actor, configuration, request.question(), answer, started, "SUCCEEDED");
+		record(actor, configuration, retrievalTelemetry, answer, started, "SUCCEEDED");
 		var byId = candidates.stream().collect(Collectors.toMap(c -> c.chunk().id().toString(), MergedCandidate::chunk));
 		var sources = new ArrayList<KnowledgeAnswerResponse.Source>();
 		if (answer.sources() != null) for (var source : answer.sources()) {
@@ -209,9 +232,39 @@ public class KnowledgeService {
 			sources.add(new KnowledgeAnswerResponse.Source(chunk.id(), chunk.documentId(), chunk.title(), chunk.chunkIndex(),
 					chunk.pageNumber(), chunk.content(), source.score(), chunk.revision()));
 		}
-		if (sources.isEmpty()) return noSources();
-		if (answer.content() == null || answer.content().isBlank()) throw new KnowledgeException("模型未返回回答，请重新提问");
+		if (answer.content() == null || answer.content().isBlank()) {
+			if (sources.isEmpty()) return noSources();
+			throw new KnowledgeException("模型未返回回答，请重新提问");
+		}
+		if (sources.isEmpty()) {
+			return new KnowledgeAnswerResponse(answer.content(), List.of(), usage(answer));
+		}
 		return new KnowledgeAnswerResponse(answer.content(), sources, usage(answer));
+	}
+
+	/**
+	 * 为高分命中的前 3 份文档补齐紧邻后置切片（如第 1 页概述命中后自动补第 2 页参数/限额条款），
+	 * 避免规程类长文档因首页标题相似度更高而漏掉关键数值页。
+	 */
+	private void expandAdjacentChunks(AuthPrincipal actor, LinkedHashMap<UUID, MergedCandidate> merged) {
+		var topDocAnchors = new LinkedHashMap<UUID, MergedCandidate>();
+		for (var candidate : merged.values()) {
+			topDocAnchors.putIfAbsent(candidate.chunk().documentId(), candidate);
+			if (topDocAnchors.size() >= 3) break;
+		}
+		for (var entry : topDocAnchors.entrySet()) {
+			var anchor = entry.getValue();
+			int nextIdx = anchor.chunk().chunkIndex() + 1;
+			var adjacentList = mapper.selectAdjacentChunks(actor.organizationId(), actor.memberId(), entry.getKey(), List.of(nextIdx));
+			if (adjacentList == null || adjacentList.isEmpty()) continue;
+			for (var neighbor : adjacentList) {
+				if (merged.containsKey(neighbor.id())) continue;
+				Double inheritedScore = anchor.vectorScore() != null
+						? Math.max(0.44, anchor.vectorScore() - 0.04)
+						: null;
+				merged.put(neighbor.id(), new MergedCandidate(neighbor, inheritedScore, null, null, true));
+			}
+		}
 	}
 	private void start(AuthPrincipal actor, KnowledgeDocumentRow row, UUID fileId, long version) {
 		if (mapper.beginProcessing(actor.organizationId(), row.getId(), fileId, version, clock.instant()) != 1) throw conflict();
@@ -279,14 +332,14 @@ public class KnowledgeService {
 		sb.append(']');
 		return sb.toString();
 	}
-	private record MergedCandidate(KnowledgeChunkResponse chunk, Double vectorScore, Integer vectorRank, Integer lexicalRank) {}
-	private void record(AuthPrincipal actor, AiModelRuntimeConfiguration configuration, String question,
+	private record MergedCandidate(KnowledgeChunkResponse chunk, Double vectorScore, Integer vectorRank, Integer lexicalRank, boolean adjacent) {}
+	private void record(AuthPrincipal actor, AiModelRuntimeConfiguration configuration, Map<String, Object> inputSnapshot,
 			PythonAiClient.PythonKnowledgeAnswer answer, Instant started, String status) {
 		recorder.record(new ModelCallRecordRequest(actor.organizationId(), actor.memberId(), null, null, null,
 				"KNOWLEDGE_QA", configuration.provider(), answer == null || answer.model() == null ? configuration.model() : answer.model(),
 				answer == null ? null : answer.providerRequestId(), "knowledge-v1", "knowledge-answer-v1", status, 1,
 				usage(answer), Math.max(0, clock.millis() - started.toEpochMilli()), null, null,
-				Map.of("questionCharacters", question.length()), Map.of("sourceCount", answer == null || answer.sources() == null ? 0 : answer.sources().size()),
+				inputSnapshot, Map.of("sourceCount", answer == null || answer.sources() == null ? 0 : answer.sources().size()),
 				"FAILED".equals(status) ? "KNOWLEDGE_MODEL_FAILED" : null, null, started, clock.instant()));
 	}
 	private static ModelUsage usage(PythonAiClient.PythonKnowledgeAnswer answer) { return answer == null || answer.usage() == null ? null : answer.usage().toModelUsage(); }

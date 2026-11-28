@@ -10,7 +10,7 @@ import static org.mockito.Mockito.when;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -18,10 +18,11 @@ import org.junit.jupiter.api.Test;
 import com.yourcompany.salesagent.ai.api.AiModelUpdateRequest;
 import com.yourcompany.salesagent.ai.domain.AiModelConfiguration;
 import com.yourcompany.salesagent.ai.infrastructure.AiModelConfigurationMapper;
-import com.yourcompany.salesagent.ai.infrastructure.ModelCallMapper;
-import com.yourcompany.salesagent.ai.infrastructure.MemberTokenUsageRow;
-import com.yourcompany.salesagent.ai.infrastructure.AiOrchestrationClient;
 import com.yourcompany.salesagent.ai.infrastructure.AiModelDefaultsProperties;
+import com.yourcompany.salesagent.ai.infrastructure.AiOrchestrationClient;
+import com.yourcompany.salesagent.ai.infrastructure.MemberTokenUsageRow;
+import com.yourcompany.salesagent.ai.infrastructure.ModelCallMapper;
+import com.yourcompany.salesagent.ai.infrastructure.ModelUsageBreakdownRow;
 import com.yourcompany.salesagent.shared.security.SecretCipher;
 
 class AiModelServiceTests {
@@ -49,7 +50,11 @@ class AiModelServiceTests {
 		assertThat(status.embeddingModel()).isEqualTo("qwen3.7-text-embedding-flash");
 		assertThat(status.apiKeyConfigured()).isFalse();
 		assertThat(status.ready()).isFalse();
+		assertThat(status.agent()).isNotNull();
+		assertThat(status.agent().enabled()).isFalse();
+		assertThat(status.agent().status()).isEqualTo("INHERIT_DEFAULT");
 		assertThatThrownBy(() -> service.testConnection(organizationId)).isInstanceOf(AiModelNotConfiguredException.class);
+		assertThatThrownBy(() -> service.testAgentConnection(organizationId)).isInstanceOf(AiModelNotConfiguredException.class);
 	}
 
 	@Test
@@ -107,6 +112,124 @@ class AiModelServiceTests {
 		verify(cipher).encrypt(organizationId, "sk-manual");
 		verify(mapper).insert(org.mockito.ArgumentMatchers.argThat((AiModelConfiguration saved) ->
 				"qwen3.7-text-embedding-flash".equals(saved.getEmbeddingModel())));
+	}
+
+	@Test
+	void routesAutonomousAgentToVolcengineAgentPlanWhileKeepingDefaultForMcp() {
+		var client = mock(AiOrchestrationClient.class);
+		var mapper = mock(AiModelConfigurationMapper.class);
+		var modelCallMapper = mock(ModelCallMapper.class);
+		var cipher = mock(SecretCipher.class);
+		var existing = AiModelConfiguration.create(
+				organizationId,
+				"QWEN",
+				"qwen4-max",
+				"qwen3.7-text-embedding-flash",
+				"https://dashscope.aliyuncs.com/compatible-mode/v1",
+				"enc-qwen",
+				clock.instant());
+		when(mapper.selectById(organizationId)).thenReturn(existing);
+		when(cipher.encrypt(organizationId, "ark-agent-secret")).thenReturn("enc-ark");
+		when(cipher.decrypt(organizationId, "enc-qwen")).thenReturn("sk-qwen");
+		when(cipher.decrypt(organizationId, "enc-ark")).thenReturn("ark-agent-secret");
+		when(client.testConnection(any())).thenReturn("Agent 连接正常");
+
+		var service = new AiModelService(
+				client,
+				mapper,
+				modelCallMapper,
+				cipher,
+				new AiModelDefaultsProperties("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+				clock);
+
+		var updated = service.update(organizationId, new AiModelUpdateRequest(
+				"QWEN",
+				"qwen4-max",
+				"qwen3.7-text-embedding-flash",
+				"https://dashscope.aliyuncs.com/compatible-mode/v1",
+				null,
+				true,
+				"VOLCENGINE_ARK",
+				"doubao-seed-2.1-pro",
+				"https://ark.cn-beijing.volces.com/api/plan/v3",
+				"ark-agent-secret"));
+
+		assertThat(updated.provider()).isEqualTo("QWEN");
+		assertThat(updated.agent()).isNotNull();
+		assertThat(updated.agent().enabled()).isTrue();
+		assertThat(updated.agent().provider()).isEqualTo("VOLCENGINE_ARK");
+		assertThat(updated.agent().model()).isEqualTo("doubao-seed-2.1-pro");
+		assertThat(updated.agent().ready()).isTrue();
+
+		var mcpConfig = service.requireRuntimeConfiguration(organizationId);
+		var agentConfig = service.requireAgentRuntimeConfiguration(organizationId);
+		assertThat(mcpConfig.provider()).isEqualTo("QWEN");
+		assertThat(mcpConfig.model()).isEqualTo("qwen4-max");
+		assertThat(agentConfig.provider()).isEqualTo("VOLCENGINE_ARK");
+		assertThat(agentConfig.model()).isEqualTo("doubao-seed-2.1-pro");
+		assertThat(agentConfig.baseUrl()).isEqualTo("https://ark.cn-beijing.volces.com/api/plan/v3");
+		assertThat(agentConfig.apiKey()).isEqualTo("ark-agent-secret");
+
+		var agentTest = service.testAgentConnection(organizationId);
+		assertThat(agentTest.provider()).isEqualTo("VOLCENGINE_ARK");
+		assertThat(agentTest.model()).isEqualTo("doubao-seed-2.1-pro");
+		assertThat(agentTest.status()).isEqualTo("CONNECTED");
+	}
+
+	@Test
+	void fallsBackToDefaultModelWhenAgentChannelDisabledAndReturnsPerModelUsage() {
+		var client = mock(AiOrchestrationClient.class);
+		var mapper = mock(AiModelConfigurationMapper.class);
+		var modelCallMapper = mock(ModelCallMapper.class);
+		var cipher = mock(SecretCipher.class);
+		var existing = AiModelConfiguration.create(
+				organizationId,
+				"QWEN",
+				"qwen4-max",
+				"qwen3.7-text-embedding-flash",
+				"https://dashscope.aliyuncs.com/compatible-mode/v1",
+				"enc-qwen",
+				clock.instant());
+		existing.updateAgentConfiguration("VOLCENGINE_ARK", "doubao-seed-2.1-pro", "https://ark.cn-beijing.volces.com/api/plan/v3", "enc-ark", clock.instant());
+		when(mapper.selectById(organizationId)).thenReturn(existing);
+		when(cipher.decrypt(organizationId, "enc-qwen")).thenReturn("sk-qwen");
+
+		var row = new ModelUsageBreakdownRow();
+		row.setProvider("VOLCENGINE_ARK");
+		row.setModel("doubao-seed-2.1-pro");
+		row.setInputTokens(1200);
+		row.setOutputTokens(300);
+		row.setSuccessfulCalls(2);
+		row.setLastCalledAt(clock.instant());
+		when(modelCallMapper.selectUsageByModel(organizationId)).thenReturn(List.of(row));
+
+		var service = new AiModelService(
+				client,
+				mapper,
+				modelCallMapper,
+				cipher,
+				new AiModelDefaultsProperties("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+				clock);
+
+		var updated = service.update(organizationId, new AiModelUpdateRequest(
+				"QWEN",
+				"qwen4-max",
+				"qwen3.7-text-embedding-flash",
+				"https://dashscope.aliyuncs.com/compatible-mode/v1",
+				null,
+				false,
+				null,
+				null,
+				null,
+				null));
+
+		assertThat(updated.agent().enabled()).isFalse();
+		assertThat(updated.usage().models()).hasSize(1);
+		assertThat(updated.usage().models().get(0).totalTokens()).isEqualTo(1500);
+
+		var fallback = service.requireAgentRuntimeConfiguration(organizationId);
+		assertThat(fallback.provider()).isEqualTo("QWEN");
+		assertThat(fallback.model()).isEqualTo("qwen4-max");
 	}
 
 	@Test

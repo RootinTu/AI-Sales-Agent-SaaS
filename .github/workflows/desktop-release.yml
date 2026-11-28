@@ -14,7 +14,7 @@ on:
       release_tag:
         description: "GitHub Release tag，例如 desktop-v0.1.5"
         required: true
-        default: "desktop-v1.5.5"
+        default: "desktop-v1.5.6"
       prerelease:
         description: "是否发布为预发布版本"
         required: true
@@ -81,12 +81,12 @@ jobs:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: AI Sales Agent Desktop ${{ inputs.release_tag || github.ref_name }}
           releaseBody: |
-            AI Sales Agent 1.5.5。
+            AI Sales Agent 1.5.6。
 
-            - 企业知识库三道防线强降噪：修复通用双字绕过向量过滤的问题，新增回答实引来源裁剪与重编号，彻底剔除不相关资料干扰。
-            - 句末行内椭圆形引用徽标：正文中每句末尾的引用自动渲染为不折行的可点击椭圆小胶囊，点击直达对应知识库文档，移除底部冗余列表。
+            - 双通道模型分流（支持火山引擎方舟 Agent Plan）：自主 Agent 空间可独立配置专用套餐模型与加密 API Key，MCP 助手与企业知识库继续使用默认主模型，并新增按模型用量统计看板。
+            - 企业知识库检索与引用五项增强：新增同文档邻近切片扩展、已废止/草稿文档自动降权、单文档 2 槽多样性上限、0 引用拒答清空来源与分段检索耗时埋点。
 
-            完整发布说明见仓库 docs/releases/1.5.5.md。
+            完整发布说明见仓库 docs/releases/1.5.6.md。
 
             - Windows 安装包由 Tauri / NSIS 生成。
             - latest.json 用于桌面端自动更新。
