@@ -457,6 +457,7 @@ function AgentModelPicker({
 }) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const paneListRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -524,6 +525,12 @@ function AgentModelPicker({
   const effectiveCategory = categories.find((cat) => cat.key === activeCategoryKey)
     ?? categories.find((cat) => cat.key === defaultCategoryKey)
     ?? categories[0]
+  const effectiveCategoryKey = effectiveCategory?.key ?? null
+
+  useEffect(() => {
+    if (!open || !paneListRef.current) return
+    paneListRef.current.scrollTop = 0
+  }, [open, effectiveCategoryKey])
 
   return (
     <div ref={containerRef} className="agent-model-picker">
@@ -549,7 +556,11 @@ function AgentModelPicker({
         <CaretDown size={12} />
       </button>
       {open ? (
-        <div className="agent-model-menu agent-model-menu-split" role="dialog" aria-label="可选 Agent 模型列表">
+        <div
+          className={`agent-model-menu agent-model-menu-split${categories.length <= 1 ? ' is-single-category' : ''}`}
+          role="dialog"
+          aria-label="可选 Agent 模型列表"
+        >
           <div className="agent-model-menu-rail" role="tablist" aria-label="模型分类">
             {categories.map((category) => {
               const isActive = category.key === effectiveCategory?.key
@@ -582,7 +593,7 @@ function AgentModelPicker({
                 <small>{effectiveCategory.hint}</small>
               </div>
             ) : null}
-            <div className="agent-model-pane-list">
+            <div ref={paneListRef} className="agent-model-pane-list">
               {(effectiveCategory?.models ?? []).map((item) => {
                 const selected = item.id === selectedModel
                 const isDefaultAgent = !item.isDefaultChannel && item.id === status?.agent?.model

@@ -217,10 +217,16 @@ describe('AgentWorkspacePage', () => {
 
   it('桌面客户端用户无需 SVIP 也可直接进入自主 Agent 空间', async () => {
     vi.mocked(isDesktopClient).mockReturnValue(true)
+    const user = userEvent.setup()
     mountAgentWorkspace()
 
     expect(await screen.findByText('桌面客户端专享')).toBeInTheDocument()
     expect(screen.getByPlaceholderText(/自主 Agent 模式/)).toBeInTheDocument()
+
+    // 仅默认通道（单分类）时以紧凑高度展示模型列表
+    await user.click(screen.getByRole('button', { name: '选择 Agent 模型' }))
+    const singleCategoryMenu = screen.getByRole('dialog', { name: '可选 Agent 模型列表' })
+    expect(singleCategoryMenu).toHaveClass('agent-model-menu-split', 'is-single-category')
   })
 
   it('支持左下角一键切换 Agent 模型、展示独立 Agent 用量，并可切换本地存储模式', async () => {
@@ -368,11 +374,18 @@ describe('AgentWorkspacePage', () => {
 
     // 左下角一键选模型：左右分栏，左侧切换分类、右侧选择模型
     await user.click(screen.getByRole('button', { name: '选择 Agent 模型' }))
+    const modelMenu = screen.getByRole('dialog', { name: '可选 Agent 模型列表' })
+    expect(modelMenu).toHaveClass('agent-model-menu-split')
+    expect(modelMenu).not.toHaveClass('is-single-category')
+    const paneList = modelMenu.querySelector('.agent-model-pane-list') as HTMLDivElement
+    expect(paneList).not.toBeNull()
+    paneList.scrollTop = 120
     expect(screen.getByRole('tab', { name: /文本生成（极速）/ })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /文本生成（标准）/ })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /文本生成（进阶）/ })).toBeInTheDocument()
-    await user.click(screen.getByRole('tab', { name: /文本生成（极速）/ }))
+    await user.hover(screen.getByRole('tab', { name: /文本生成（极速）/ }))
     expect(screen.getByRole('option', { name: /doubao-seed-2\.0-mini/ })).toBeInTheDocument()
+    expect(paneList.scrollTop).toBe(0)
     await user.click(screen.getByRole('tab', { name: /文本生成（进阶）/ }))
     await user.click(screen.getByRole('option', { name: /deepseek-v4-pro/ }))
 
