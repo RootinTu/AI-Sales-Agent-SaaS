@@ -16,6 +16,9 @@ export interface AdminMember {
   allocatedTokens: number | null
   usedTokens: number
   remainingTokens: number | null
+  embeddingAllocatedTokens?: number | null
+  embeddingUsedTokens?: number
+  embeddingRemainingTokens?: number | null
 }
 
 export interface AdminMemberPage {
@@ -99,12 +102,34 @@ export interface TeamTokenBudget {
   totalTokens: number | null
   allocatedTokens: number
   unallocatedTokens: number | null
+  embeddingTotalTokens?: number | null
+  embeddingAllocatedTokens?: number
+  embeddingUnallocatedTokens?: number | null
 }
 
-export function updateMemberTokenQuota(memberId: string, allocatedTokens: number | null) {
+export interface UpdateMemberTokenQuotaInput {
+  allocatedTokens?: number | null
+  embeddingAllocatedTokens?: number | null
+  updateAllocatedQuota?: boolean
+  updateEmbeddingQuota?: boolean
+}
+
+export interface UpdateTeamTokenBudgetInput {
+  totalTokens?: number | null
+  embeddingTotalTokens?: number | null
+  updateEmbeddingBudget?: boolean
+}
+
+export function updateMemberTokenQuota(
+  memberId: string,
+  input: number | null | UpdateMemberTokenQuotaInput,
+) {
+  const data = typeof input === 'object' && input !== null
+    ? input
+    : { allocatedTokens: input, updateAllocatedQuota: true, updateEmbeddingQuota: false }
   return requestJson<AdminMember>(`/api/v1/admin/members/${memberId}/token-quota`, {
     method: 'PUT',
-    data: { allocatedTokens },
+    data,
   })
 }
 
@@ -112,10 +137,13 @@ export function getTeamTokenBudget() {
   return getJson<TeamTokenBudget>('/api/v1/admin/token-budget')
 }
 
-export function updateTeamTokenBudget(totalTokens: number) {
+export function updateTeamTokenBudget(input: number | UpdateTeamTokenBudgetInput) {
+  const data = typeof input === 'number'
+    ? { totalTokens: input, updateEmbeddingBudget: false }
+    : input
   return requestJson<TeamTokenBudget>('/api/v1/admin/token-budget', {
     method: 'PUT',
-    data: { totalTokens },
+    data,
   })
 }
 

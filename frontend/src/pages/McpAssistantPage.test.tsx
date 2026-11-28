@@ -23,8 +23,10 @@ vi.mock('../auth/use-auth', () => ({
 }))
 
 vi.mock('../api/mcp-chat-api', () => ({
+  isDesktopClient: vi.fn(() => false),
   getMcpCapabilities: vi.fn(),
   getMcpConversations: vi.fn(),
+  deleteMcpConversation: vi.fn(),
   getMcpMessages: vi.fn(),
   streamMcpChatMessage: vi.fn(),
 }))
@@ -490,5 +492,96 @@ describe('McpAssistantPage', () => {
       expect.any(Function),
       expect.any(AbortSignal),
     ))
+  })
+
+  it('MCP 助手展示 7 天自动清除提示，并支持在配额弹窗中独立管理向量模型配额', async () => {
+    vi.mocked(getAiModelStatus).mockResolvedValue({
+      provider: 'QWEN',
+      model: 'qwen4-max',
+      embeddingModel: 'qwen3.7-text-embedding-flash',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      apiKeyConfigured: true,
+      ready: true,
+      status: 'READY',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedInputTokens: 0,
+        totalTokens: 150,
+        successfulCalls: 3,
+        lastCalledAt: '2026-09-15T08:00:00Z',
+        remainingTokens: null,
+        remainingStatus: 'CHAT_API_DOES_NOT_RETURN_ACCOUNT_REMAINING',
+        memberAllocatedTokens: 10_000,
+        memberUsedTokens: 150,
+        memberRemainingTokens: 9_850,
+        memberEmbeddingAllocatedTokens: 50_000,
+        memberEmbeddingUsedTokens: 10_000,
+        memberEmbeddingRemainingTokens: 40_000,
+      },
+    })
+    vi.mocked(getTeamTokenBudget).mockResolvedValue({
+      totalTokens: 100_000,
+      allocatedTokens: 10_000,
+      unallocatedTokens: 90_000,
+      embeddingTotalTokens: 200_000,
+      embeddingAllocatedTokens: 50_000,
+      embeddingUnallocatedTokens: 150_000,
+    })
+    vi.mocked(updateTeamTokenBudget).mockResolvedValue({
+      totalTokens: 100_000,
+      allocatedTokens: 10_000,
+      unallocatedTokens: 90_000,
+      embeddingTotalTokens: 300_000,
+      embeddingAllocatedTokens: 50_000,
+      embeddingUnallocatedTokens: 250_000,
+    })
+    vi.mocked(updateMemberTokenQuota).mockResolvedValue({
+      id: 'member-1',
+      userId: 'user-1',
+      email: 'sales@example.test',
+      displayName: '销售成员',
+      role: 'SALES',
+      status: 'ACTIVE',
+      joinedAt: '2026-09-01T08:00:00Z',
+      lastLoginAt: null,
+      createdAt: '2026-09-01T08:00:00Z',
+      allocatedTokens: 10_000,
+      usedTokens: 1200,
+      remainingTokens: 8800,
+      embeddingAllocatedTokens: 80_000,
+      embeddingUsedTokens: 10_000,
+      embeddingRemainingTokens: 70_000,
+    })
+
+    const user = userEvent.setup()
+    renderMcpAssistantPage()
+
+    expect(await screen.findByText(/默认保留 7 天，到期自动清除/)).toBeInTheDocument()
+    expect((await screen.findAllByText('qwen4-max')).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/向量模型 · qwen3\.7-text-embedding-flash/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Token 分配' }))
+    await user.click(screen.getByRole('tab', { name: '向量模型配额' }))
+
+    const embeddingBudgetInput = await screen.findByLabelText('团队向量模型 Token 总额')
+    await user.clear(embeddingBudgetInput)
+    await user.type(embeddingBudgetInput, '300000')
+    await user.click(screen.getByRole('button', { name: '保存向量总额' }))
+    await waitFor(() => expect(updateTeamTokenBudget).toHaveBeenCalledWith({
+      totalTokens: 100_000,
+      embeddingTotalTokens: 300_000,
+      updateEmbeddingBudget: true,
+    }))
+
+    const memberEmbeddingInput = screen.getByLabelText('销售成员 向量模型 Token 额度')
+    await user.clear(memberEmbeddingInput)
+    await user.type(memberEmbeddingInput, '80000')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(updateMemberTokenQuota).toHaveBeenCalledWith('member-1', {
+      embeddingAllocatedTokens: 80_000,
+      updateAllocatedQuota: false,
+      updateEmbeddingQuota: true,
+    }))
   })
 })

@@ -19,7 +19,9 @@ public interface AssistantConversationMapper {
 	IPage<AssistantConversationRow> selectConversations(
 			Page<AssistantConversationRow> page,
 			@Param("organizationId") UUID organizationId,
-			@Param("memberId") UUID memberId);
+			@Param("memberId") UUID memberId,
+			@Param("mode") String mode,
+			@Param("now") Instant now);
 
 	int insertConversation(
 			@Param("id") UUID id,
@@ -28,12 +30,22 @@ public interface AssistantConversationMapper {
 			@Param("memberId") UUID memberId,
 			@Param("title") String title,
 			@Param("channel") String channel,
+			@Param("mode") String mode,
+			@Param("expiresAt") Instant expiresAt,
 			@Param("now") Instant now);
 
 	int touchConversation(
 			@Param("organizationId") UUID organizationId,
 			@Param("conversationId") UUID conversationId,
+			@Param("expiresAt") Instant expiresAt,
 			@Param("now") Instant now);
+
+	int deleteConversation(
+			@Param("organizationId") UUID organizationId,
+			@Param("memberId") UUID memberId,
+			@Param("conversationId") UUID conversationId);
+
+	int deleteExpiredConversations(@Param("now") Instant now);
 
 	int insertMessage(
 			@Param("id") UUID id,

@@ -44,6 +44,9 @@ public class AiModelConfiguration {
 	@TableField(value = "encrypted_agent_api_key", updateStrategy = FieldStrategy.ALWAYS)
 	private String encryptedAgentApiKey;
 
+	@TableField(value = "agent_available_models", updateStrategy = FieldStrategy.ALWAYS)
+	private String agentAvailableModels;
+
 	@TableField("encryption_version")
 	private int encryptionVersion;
 
@@ -128,10 +131,21 @@ public class AiModelConfiguration {
 			String agentBaseUrl,
 			String encryptedAgentApiKey,
 			Instant now) {
+		updateAgentConfiguration(agentProvider, agentModelName, agentBaseUrl, encryptedAgentApiKey, this.agentAvailableModels, now);
+	}
+
+	public void updateAgentConfiguration(
+			String agentProvider,
+			String agentModelName,
+			String agentBaseUrl,
+			String encryptedAgentApiKey,
+			String agentAvailableModels,
+			Instant now) {
 		this.agentProvider = agentProvider;
 		this.agentModelName = agentModelName;
 		this.agentBaseUrl = agentBaseUrl;
 		this.encryptedAgentApiKey = encryptedAgentApiKey;
+		this.agentAvailableModels = agentAvailableModels;
 		this.updatedAt = now;
 	}
 
@@ -140,6 +154,7 @@ public class AiModelConfiguration {
 		this.agentModelName = null;
 		this.agentBaseUrl = null;
 		this.encryptedAgentApiKey = null;
+		this.agentAvailableModels = null;
 		this.updatedAt = now;
 	}
 
@@ -159,6 +174,7 @@ public class AiModelConfiguration {
 	public String getAgentModelName() { return agentModelName; }
 	public String getAgentBaseUrl() { return agentBaseUrl; }
 	public String getEncryptedAgentApiKey() { return encryptedAgentApiKey; }
+	public String getAgentAvailableModels() { return agentAvailableModels; }
 	public int getEncryptionVersion() { return encryptionVersion; }
 	public Instant getCreatedAt() { return createdAt; }
 	public Instant getUpdatedAt() { return updatedAt; }

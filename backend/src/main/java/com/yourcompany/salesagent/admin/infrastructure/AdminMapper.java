@@ -73,7 +73,8 @@ public interface AdminMapper {
 	int upsertMemberTokenQuota(
 			@Param("organizationId") UUID organizationId,
 			@Param("memberId") UUID memberId,
-			@Param("allocatedTokens") long allocatedTokens,
+			@Param("allocatedTokens") Long allocatedTokens,
+			@Param("embeddingAllocatedTokens") Long embeddingAllocatedTokens,
 			@Param("updatedBy") UUID updatedBy,
 			@Param("now") Instant now);
 
@@ -85,11 +86,16 @@ public interface AdminMapper {
 
 	Long selectTeamTokenBudget(@Param("organizationId") UUID organizationId);
 
+	Long selectTeamEmbeddingTokenBudget(@Param("organizationId") UUID organizationId);
+
 	long sumMemberTokenQuotas(@Param("organizationId") UUID organizationId);
+
+	long sumMemberEmbeddingTokenQuotas(@Param("organizationId") UUID organizationId);
 
 	int upsertTeamTokenBudget(
 			@Param("organizationId") UUID organizationId,
 			@Param("totalTokens") long totalTokens,
+			@Param("embeddingTotalTokens") Long embeddingTotalTokens,
 			@Param("updatedBy") UUID updatedBy,
 			@Param("now") Instant now);
 }

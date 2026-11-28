@@ -1,6 +1,12 @@
 import { apiClient, getJson, requestJson } from './axios-client'
 
 export type AssistantMode = 'LIGHT' | 'AGENT'
+export type AssistantStorageMode = 'LOCAL' | 'CLOUD'
+
+export interface AssistantLocalHistoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
 
 export interface AssistantToolTrace {
   name: string
@@ -23,10 +29,13 @@ export interface AssistantConversation {
   id: string
   title: string
   channel: string
+  mode?: AssistantMode
   status: string
   lastMessageAt: string | null
+  expiresAt?: string | null
   createdAt: string
   updatedAt: string
+  storageMode?: AssistantStorageMode
 }
 
 export interface AssistantMessage {
@@ -76,6 +85,9 @@ export interface SendMcpChatMessageInput {
   message: string
   attachmentIds?: string[]
   mode?: AssistantMode
+  model?: string
+  storageMode?: AssistantStorageMode
+  history?: AssistantLocalHistoryMessage[]
 }
 
 export function isDesktopClient() {
@@ -92,8 +104,14 @@ export function getMcpCapabilities() {
   })
 }
 
-export function getMcpConversations() {
-  return getJson<AssistantConversationPage>('/api/v1/mcp/conversations?page=0&size=30')
+export function getMcpConversations(mode: AssistantMode = 'LIGHT') {
+  return getJson<AssistantConversationPage>(`/api/v1/mcp/conversations?mode=${mode}&page=0&size=30`)
+}
+
+export function deleteMcpConversation(conversationId: string) {
+  return requestJson<void>(`/api/v1/mcp/conversations/${conversationId}`, {
+    method: 'DELETE',
+  })
 }
 
 export function getMcpMessages(conversationId: string) {
@@ -111,6 +129,9 @@ export function sendMcpChatMessage(input: SendMcpChatMessageInput) {
       attachmentIds: input.attachmentIds,
       channel: desktop ? 'DESKTOP' : 'WEB',
       mode: input.mode ?? 'LIGHT',
+      model: input.model || undefined,
+      storageMode: input.storageMode,
+      history: input.history,
     },
   })
 }

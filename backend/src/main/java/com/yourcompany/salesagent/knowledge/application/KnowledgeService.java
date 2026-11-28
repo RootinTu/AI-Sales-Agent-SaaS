@@ -51,6 +51,7 @@ public class KnowledgeService {
 	}
 	public KnowledgeDocumentResponse upload(AuthPrincipal actor, KnowledgeDocumentRequest input, MultipartFile file) {
 		requireWriter(actor);
+		models.requireAvailableEmbeddingQuota(actor.organizationId(), actor.memberId());
 		validateFilename(file.getOriginalFilename());
 		var row = transactions.execute(tx -> {
 			var uploaded = files.upload(actor, null, file);
@@ -62,6 +63,7 @@ public class KnowledgeService {
 	}
 	public KnowledgeDocumentResponse createText(AuthPrincipal actor, KnowledgeTextRequest request) {
 		requireWriter(actor);
+		models.requireAvailableEmbeddingQuota(actor.organizationId(), actor.memberId());
 		var row = transactions.execute(tx -> {
 			var filename = request.metadata().title().substring(0, Math.min(request.metadata().title().length(), 240)) + ".txt";
 			var file = files.uploadContent(actor, null, filename, "text/plain", request.content().getBytes(StandardCharsets.UTF_8));
@@ -89,6 +91,7 @@ public class KnowledgeService {
 		return "PROCESSING".equals(Objects.requireNonNull(row).getStatus()) ? process(actor, row) : response(actor, row);
 	}
 	public KnowledgeDocumentResponse reprocess(AuthPrincipal actor, UUID id, long version, MultipartFile replacement) {
+		models.requireAvailableEmbeddingQuota(actor.organizationId(), actor.memberId());
 		if (replacement != null) validateFilename(replacement.getOriginalFilename());
 		var row = transactions.execute(tx -> {
 			var current = requireManage(actor, id);
@@ -144,6 +147,7 @@ public class KnowledgeService {
 
 	public KnowledgeAnswerResponse ask(AuthPrincipal actor, KnowledgeQueryRequest request) {
 		models.requireAvailableTokenQuota(actor.organizationId(), actor.memberId());
+		models.requireAvailableEmbeddingQuota(actor.organizationId(), actor.memberId());
 		if (request.documentId() != null) require(actor, request.documentId(), false);
 		var configuration = models.requireRuntimeConfiguration(actor.organizationId(), actor.memberId());
 		var merged = new LinkedHashMap<UUID, MergedCandidate>();

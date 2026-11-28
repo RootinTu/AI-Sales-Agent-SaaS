@@ -12,6 +12,7 @@ export interface AiAgentModelStatus {
   apiKeyConfigured: boolean
   ready: boolean
   status: AiAgentModelStatusCode
+  availableModels?: string[]
 }
 
 export interface AiModelUsageBreakdownItem {
@@ -23,6 +24,16 @@ export interface AiModelUsageBreakdownItem {
   totalTokens: number
   successfulCalls: number
   lastCalledAt: string | null
+}
+
+export interface AiAgentUsageSummary {
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  totalTokens: number
+  successfulCalls: number
+  lastCalledAt: string | null
+  models: AiModelUsageBreakdownItem[]
 }
 
 export interface AiModelStatus {
@@ -50,6 +61,12 @@ export interface AiModelUsage {
   memberUsedTokens: number
   memberRemainingTokens: number | null
   models?: AiModelUsageBreakdownItem[]
+  memberEmbeddingAllocatedTokens?: number | null
+  memberEmbeddingUsedTokens?: number
+  memberEmbeddingRemainingTokens?: number | null
+  embeddingTotalTokens?: number
+  embeddingSuccessfulCalls?: number
+  agent?: AiAgentUsageSummary
 }
 
 export interface AiModelTestResult {
@@ -71,6 +88,7 @@ export interface AiModelUpdateInput {
   agentModel?: string
   agentBaseUrl?: string
   agentApiKey?: string
+  agentAvailableModels?: string[]
 }
 
 export function getAiModelStatus() {

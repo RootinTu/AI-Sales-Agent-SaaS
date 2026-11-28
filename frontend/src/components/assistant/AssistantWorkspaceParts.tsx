@@ -2,6 +2,7 @@ import {
   Check,
   CircleNotch,
   EnvelopeSimple,
+  GearSix,
   Paperclip,
   PaperPlaneTilt,
   Robot,
@@ -46,6 +47,7 @@ export function AssistantConversationPane({
   loadingHistoryTitle,
   attachmentAriaLabel,
   placeholder,
+  modelSelector,
   extraFooterMeta,
 }: {
   session: AssistantChatSession
@@ -56,6 +58,7 @@ export function AssistantConversationPane({
   loadingHistoryTitle: string
   attachmentAriaLabel: string
   placeholder: string
+  modelSelector?: ReactNode
   extraFooterMeta?: ReactNode
 }) {
   const messageListRef = useRef<HTMLDivElement | null>(null)
@@ -193,7 +196,7 @@ export function AssistantConversationPane({
             >
               <Paperclip size={18} />
             </button>
-            <span><Sparkle size={15} />{session.modelQuery.data?.model ?? 'qwen3.5-plus'}</span>
+            {modelSelector ?? <span><Sparkle size={15} />{session.modelQuery.data?.model ?? 'qwen3.5-plus'}</span>}
             {extraFooterMeta}
             {session.uploadingAttachments ? <span><CircleNotch size={15} className="mcp-spin" />正在上传附件</span> : null}
           </div>
@@ -211,6 +214,95 @@ export function AssistantConversationPane({
   )
 }
 
+const AGENT_PROVIDER_LABELS: Record<string, string> = {
+  QWEN: '通义千问（百炼）',
+  VOLCENGINE_ARK: '火山方舟 Agent Plan',
+  OPENAI_COMPATIBLE: 'OpenAI 兼容通道',
+}
+
+/**
+ * 自主 Agent 空间专属的独立用量面板（与 MCP 助手的免费额度配额面板完全解耦）。
+ */
+export function AgentUsagePanel({
+  status,
+  loading,
+  activeModel,
+  usesIndependentChannel,
+}: {
+  status?: AiModelStatus
+  loading: boolean
+  activeModel: string
+  usesIndependentChannel: boolean
+}) {
+  const agentConfig = status?.agent
+  const agentUsage = status?.usage?.agent
+  const agentTotalTokens = agentUsage?.totalTokens ?? 0
+  const agentCalls = agentUsage?.successfulCalls ?? 0
+  const topModels = (agentUsage?.models ?? []).slice(0, 3)
+  const providerCode = usesIndependentChannel
+    ? (agentConfig?.provider ?? 'VOLCENGINE_ARK')
+    : (status?.provider ?? 'QWEN')
+  const providerLabel = AGENT_PROVIDER_LABELS[providerCode] ?? providerCode
+  const channelBadgeText = usesIndependentChannel
+    ? '独立通道已就绪'
+    : agentConfig?.enabled
+      ? '当前切回默认通道'
+      : '沿用默认模型'
+
+  return (
+    <section className="mcp-model-panel agent-usage-panel" aria-label="自主 Agent 用量统计">
+      <header>
+        <strong>Agent 通道用量</strong>
+        <span className={`agent-channel-pill${usesIndependentChannel ? ' is-independent' : ''}`}>{channelBadgeText}</span>
+      </header>
+      {loading ? (
+        <div className="mcp-model-loading"><span /><span /><span /></div>
+      ) : (
+        <>
+          <div className="agent-usage-active-model">
+            <small>{providerLabel}</small>
+            <strong><Sparkle size={13} />{activeModel || status?.model || '-'}</strong>
+          </div>
+          <div className="mcp-usage-breakdown">
+            <span>
+              <small>Agent 累计 Token</small>
+              <strong>{formatCompactNumber(agentTotalTokens)}</strong>
+            </span>
+            <span>
+              <small>自主调用</small>
+              <strong>{formatCompactNumber(agentCalls)}</strong>
+            </span>
+          </div>
+          {agentTotalTokens > 0 ? (
+            <p className="agent-usage-io-note">
+              输入 {formatCompactNumber(agentUsage?.inputTokens ?? 0)} · 输出 {formatCompactNumber(agentUsage?.outputTokens ?? 0)}
+            </p>
+          ) : null}
+          {topModels.length > 0 ? (
+            <div className="agent-usage-models" aria-label="Agent 按模型用量">
+              {topModels.map((item) => (
+                <div key={`${item.provider}:${item.model}`}>
+                  <code>{item.model}</code>
+                  <span>{formatCompactNumber(item.totalTokens)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="agent-usage-io-note">
+              {usesIndependentChannel ? '独立套餐通道计费，不占用 MCP 免费对话配额。' : '可在设置中开启火山方舟 Agent Plan 独立通道。'}
+            </p>
+          )}
+          <Link to="/app/settings#model" className="mcp-quota-button agent-settings-link">
+            <GearSix size={13} />
+            <span>管理 Agent 模型通道</span>
+          </Link>
+          {agentUsage?.lastCalledAt ? <p className="mcp-model-time">最近调用：{formatTime(agentUsage.lastCalledAt)}</p> : null}
+        </>
+      )}
+    </section>
+  )
+}
+
 export function ModelInfoPanel({ status, loading, canAllocate, onAllocate }: {
   status?: AiModelStatus
   loading: boolean
@@ -221,10 +313,13 @@ export function ModelInfoPanel({ status, loading, canAllocate, onAllocate }: {
   const totalTokens = usage?.totalTokens ?? 0
   const memberUsedTokens = usage?.memberUsedTokens ?? 0
   const memberAllocatedTokens = usage?.memberAllocatedTokens ?? null
+  const embeddingAllocated = usage?.memberEmbeddingAllocatedTokens ?? null
+  const embeddingUsed = usage?.memberEmbeddingUsedTokens ?? 0
+  const embeddingModelName = status?.embeddingModel ?? 'qwen3.7-text-embedding-flash'
   return (
     <section className="mcp-model-panel" aria-label="用量统计">
       <header>
-        <strong>用量统计</strong>
+        <strong>MCP 额度统计</strong>
         <span>{memberAllocatedTokens == null ? '未分配额度' : `剩 ${formatCompactNumber(usage?.memberRemainingTokens ?? 0)}`}</span>
       </header>
       {loading ? (
@@ -232,10 +327,31 @@ export function ModelInfoPanel({ status, loading, canAllocate, onAllocate }: {
       ) : (
         <>
           {memberAllocatedTokens == null || memberAllocatedTokens <= 0 ? (
-            <div className="mcp-usage-total is-blocked"><span>当前不可用</span><strong>0</strong><small>可用 Token</small></div>
+            <div className="mcp-usage-total is-blocked"><span>普通模型不可用</span><strong>0</strong><small>可用 Token</small></div>
           ) : (
             <TokenProgress label="剩余额度" value={memberUsedTokens} total={memberAllocatedTokens} tone="blue" />
           )}
+
+          <div className="mcp-embedding-quota-block" aria-label="向量模型配额">
+            {embeddingAllocated != null && embeddingAllocated > 0 ? (
+              <TokenProgress
+                label={`向量模型 · ${embeddingModelName}`}
+                value={embeddingUsed}
+                total={embeddingAllocated}
+                tone="green"
+              />
+            ) : (
+              <div className="mcp-embedding-unbounded">
+                <span>向量模型 · {embeddingModelName}</span>
+                <small>
+                  {embeddingAllocated === 0
+                    ? '已停用（0 额度）'
+                    : `已用 ${formatCompactNumber(embeddingUsed)} · 未单独设限`}
+                </small>
+              </div>
+            )}
+          </div>
+
           <div className="mcp-usage-breakdown">
             <span><small>团队累计</small><strong>{formatCompactNumber(totalTokens)}</strong></span>
             <span><small>模型调用</small><strong>{formatCompactNumber(usage?.successfulCalls ?? 0)}</strong></span>
@@ -252,47 +368,135 @@ export function ModelInfoPanel({ status, loading, canAllocate, onAllocate }: {
   )
 }
 
+type TokenAllocationTrack = 'chat' | 'embedding'
+
 export function TokenAllocationDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
+  const [track, setTrack] = useState<TokenAllocationTrack>('chat')
   const [totalInput, setTotalInput] = useState<string | null>(null)
+  const [embeddingTotalInput, setEmbeddingTotalInput] = useState<string | null>(null)
   const [page, setPage] = useState(0)
   const budgetQuery = useQuery({ queryKey: ['team-token-budget'], queryFn: getTeamTokenBudget })
   const query = useQuery({
     queryKey: ['admin-members', 'token-allocation', page],
     queryFn: () => getMembers({ keyword: '', role: '', status: 'ACTIVE', page, size: 20 }),
   })
+  const isEmbedding = track === 'embedding'
   const totalValue = totalInput ?? (budgetQuery.data?.totalTokens == null ? '' : String(budgetQuery.data.totalTokens))
   const totalInvalid = !/^\d+$/.test(totalValue) || Number(totalValue) > 1_000_000_000_000
     || !Number.isSafeInteger(Number(totalValue)) || Number(totalValue) < (budgetQuery.data?.allocatedTokens ?? 0)
+
+  const embeddingAllocated = budgetQuery.data?.embeddingAllocatedTokens ?? 0
+  const embeddingTotalValue = embeddingTotalInput ?? (
+    budgetQuery.data?.embeddingTotalTokens == null ? '' : String(budgetQuery.data.embeddingTotalTokens)
+  )
+  const embeddingTotalInvalid = embeddingTotalValue.trim() !== '' && (
+    !/^\d+$/.test(embeddingTotalValue.trim()) || Number(embeddingTotalValue) > 1_000_000_000_000
+    || !Number.isSafeInteger(Number(embeddingTotalValue)) || Number(embeddingTotalValue) < embeddingAllocated
+  )
+
   const budgetUnavailable = budgetQuery.isError && budgetQuery.error instanceof ApiError && budgetQuery.error.status === 404
   const budgetMutation = useMutation({
-    mutationFn: () => updateTeamTokenBudget(Number(totalValue)),
+    mutationFn: () => {
+      if (isEmbedding) {
+        return updateTeamTokenBudget({
+          totalTokens: budgetQuery.data?.totalTokens ?? 0,
+          embeddingTotalTokens: embeddingTotalValue.trim() === '' ? null : Number(embeddingTotalValue),
+          updateEmbeddingBudget: true,
+        })
+      }
+      return updateTeamTokenBudget(Number(totalValue))
+    },
     onSuccess: async (budget) => {
       queryClient.setQueryData(['team-token-budget'], budget)
       setTotalInput(null)
+      setEmbeddingTotalInput(null)
       await queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
     },
   })
   return (
     <div className="admin-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section className="admin-modal mcp-token-modal" role="dialog" aria-modal="true" aria-labelledby="token-allocation-title">
-        <header><span className="drawer-title-icon"><Sparkle size={20} /></span><div><h2 id="token-allocation-title">Token 分配</h2><p>按团队内部总额分配；这不是千问账户余额。</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
+        <header>
+          <span className="drawer-title-icon"><Sparkle size={20} /></span>
+          <div>
+            <h2 id="token-allocation-title">Token 分配</h2>
+            <p>支持为 MCP 普通对话模型与知识库向量模型分别设定团队总额与个人配额。</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+        </header>
+        <div className="mcp-token-mode-tabs" role="tablist" aria-label="配额模型类别">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isEmbedding}
+            className={!isEmbedding ? 'is-active' : ''}
+            onClick={() => setTrack('chat')}
+          >
+            普通模型配额
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isEmbedding}
+            className={isEmbedding ? 'is-active' : ''}
+            onClick={() => setTrack('embedding')}
+          >
+            向量模型配额
+          </button>
+        </div>
         <div className="mcp-token-budget">
-          <form onSubmit={(event) => { event.preventDefault(); if (!totalInvalid && budgetQuery.isSuccess) budgetMutation.mutate() }}>
-            <label htmlFor="team-token-total">团队 Token 总额</label>
-            <input id="team-token-total" inputMode="numeric" value={totalValue} onChange={(event) => setTotalInput(event.target.value)} placeholder="先设置总额" />
-            <button className="button button-primary" type="submit" disabled={totalInvalid || budgetMutation.isPending || !budgetQuery.isSuccess}>保存总额</button>
-          </form>
-          {budgetQuery.data ? <div className="mcp-token-budget-stats" aria-label="团队 Token 预算">
-            <span>总额 <strong>{budgetQuery.data.totalTokens == null ? '未设置' : formatCompactNumber(budgetQuery.data.totalTokens)}</strong></span>
-            <span>已分配 <strong>{formatCompactNumber(budgetQuery.data.allocatedTokens)}</strong></span>
-            <span>待分配 <strong>{budgetQuery.data.unallocatedTokens == null ? '—' : formatCompactNumber(budgetQuery.data.unallocatedTokens)}</strong></span>
-          </div> : null}
+          {!isEmbedding ? (
+            <>
+              <form onSubmit={(event) => { event.preventDefault(); if (!totalInvalid && budgetQuery.isSuccess) budgetMutation.mutate() }}>
+                <label htmlFor="team-token-total">团队 Token 总额</label>
+                <input id="team-token-total" inputMode="numeric" value={totalValue} onChange={(event) => setTotalInput(event.target.value)} placeholder="先设置总额" />
+                <button className="button button-primary" type="submit" disabled={totalInvalid || budgetMutation.isPending || !budgetQuery.isSuccess}>保存总额</button>
+              </form>
+              {budgetQuery.data ? <div className="mcp-token-budget-stats" aria-label="团队 Token 预算">
+                <span>总额 <strong>{budgetQuery.data.totalTokens == null ? '未设置' : formatCompactNumber(budgetQuery.data.totalTokens)}</strong></span>
+                <span>已分配 <strong>{formatCompactNumber(budgetQuery.data.allocatedTokens)}</strong></span>
+                <span>待分配 <strong>{budgetQuery.data.unallocatedTokens == null ? '—' : formatCompactNumber(budgetQuery.data.unallocatedTokens)}</strong></span>
+              </div> : null}
+            </>
+          ) : (
+            <>
+              <form onSubmit={(event) => { event.preventDefault(); if (!embeddingTotalInvalid && budgetQuery.isSuccess && budgetQuery.data?.totalTokens != null) budgetMutation.mutate() }}>
+                <label htmlFor="team-embedding-token-total">团队向量模型 Token 总额</label>
+                <input
+                  id="team-embedding-token-total"
+                  inputMode="numeric"
+                  value={embeddingTotalValue}
+                  onChange={(event) => setEmbeddingTotalInput(event.target.value)}
+                  placeholder="留空不单独限额，例如 1000000"
+                />
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={budgetQuery.data?.totalTokens == null || embeddingTotalInvalid || budgetMutation.isPending || !budgetQuery.isSuccess}
+                >
+                  保存向量总额
+                </button>
+              </form>
+              {budgetQuery.data ? <div className="mcp-token-budget-stats" aria-label="团队向量模型 Token 预算">
+                <span>向量总额 <strong>{budgetQuery.data.embeddingTotalTokens == null ? '未单独设限' : formatCompactNumber(budgetQuery.data.embeddingTotalTokens)}</strong></span>
+                <span>已分配 <strong>{formatCompactNumber(embeddingAllocated)}</strong></span>
+                <span>待分配 <strong>{budgetQuery.data.embeddingUnallocatedTokens == null ? '—' : formatCompactNumber(budgetQuery.data.embeddingUnallocatedTokens)}</strong></span>
+              </div> : null}
+            </>
+          )}
           {budgetQuery.isError ? <p role="alert">{budgetUnavailable ? '当前后端版本尚未提供 Token 总额接口，请先部署包含此功能的后端和数据库迁移。' : budgetQuery.error.message}</p> : null}
           {budgetMutation.isError ? <p role="alert">{budgetMutation.error.message}</p> : null}
         </div>
         <div className="mcp-token-member-list">
-          {query.data?.content.map((member) => <TokenAllocationRow key={member.id} member={member} budget={budgetQuery.data} />)}
+          {query.data?.content.map((member) => (
+            <TokenAllocationRow
+              key={`${member.id}:${track}`}
+              member={member}
+              budget={budgetQuery.data}
+              track={track}
+            />
+          ))}
           {query.isPending ? <p className="audit-state">正在读取成员用量…</p> : null}
           {query.isError ? <p className="audit-state is-error">{query.error.message}</p> : null}
         </div>
@@ -307,25 +511,71 @@ export function TokenAllocationDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-function TokenAllocationRow({ member, budget }: { member: AdminMember; budget?: TeamTokenBudget }) {
+function TokenAllocationRow({
+  member,
+  budget,
+  track,
+}: {
+  member: AdminMember
+  budget?: TeamTokenBudget
+  track: TokenAllocationTrack
+}) {
   const queryClient = useQueryClient()
-  const [value, setValue] = useState(member.allocatedTokens == null ? '' : String(member.allocatedTokens))
+  const isEmbedding = track === 'embedding'
+  const currentAllocated = isEmbedding ? (member.embeddingAllocatedTokens ?? null) : member.allocatedTokens
+  const currentUsed = isEmbedding ? (member.embeddingUsedTokens ?? 0) : member.usedTokens
+  const [value, setValue] = useState(currentAllocated == null ? '' : String(currentAllocated))
   const mutation = useMutation({
-    mutationFn: () => updateMemberTokenQuota(member.id, value.trim() === '' ? null : Number(value)),
+    mutationFn: () => {
+      const parsed = value.trim() === '' ? null : Number(value)
+      if (isEmbedding) {
+        return updateMemberTokenQuota(member.id, {
+          embeddingAllocatedTokens: parsed,
+          updateAllocatedQuota: false,
+          updateEmbeddingQuota: true,
+        })
+      }
+      return updateMemberTokenQuota(member.id, parsed)
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['admin-members'] })
       await queryClient.invalidateQueries({ queryKey: ['team-token-budget'] })
       await queryClient.invalidateQueries({ queryKey: ['ai-model-status'] })
     },
   })
-  const maxForMember = (budget?.unallocatedTokens ?? 0) + (member.allocatedTokens ?? 0)
+  const hasTeamBudget = isEmbedding ? budget?.embeddingTotalTokens != null : budget?.totalTokens != null
+  const maxForMember = isEmbedding
+    ? (budget?.embeddingUnallocatedTokens ?? 0) + (member.embeddingAllocatedTokens ?? 0)
+    : (budget?.unallocatedTokens ?? 0) + (member.allocatedTokens ?? 0)
   const invalid = value.trim() !== '' && (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value))
     || Number(value) > 1_000_000_000_000 || Number(value) > maxForMember)
   return (
     <div className="mcp-token-member-row">
-      <span className="member-identity"><i>{member.displayName.slice(0, 1)}</i><span><strong>{member.displayName}</strong><small>已用 {formatCompactNumber(member.usedTokens)} Token</small></span></span>
-      <label><span>分配额度 · 最多 {formatCompactNumber(maxForMember)}</span><input aria-label={`${member.displayName} Token 额度`} inputMode="numeric" placeholder="未分配" value={value} onChange={(event) => setValue(event.target.value)} /></label>
-      <button className="button button-primary" type="button" disabled={!budget || budget.totalTokens == null || invalid || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '保存中' : '保存'}</button>
+      <span className="member-identity">
+        <i>{member.displayName.slice(0, 1)}</i>
+        <span>
+          <strong>{member.displayName}</strong>
+          <small>已用 {formatCompactNumber(currentUsed)} {isEmbedding ? '向量' : ''} Token</small>
+        </span>
+      </span>
+      <label>
+        <span>{isEmbedding ? '向量额度' : '分配额度'} · 最多 {formatCompactNumber(maxForMember)}</span>
+        <input
+          aria-label={isEmbedding ? `${member.displayName} 向量模型 Token 额度` : `${member.displayName} Token 额度`}
+          inputMode="numeric"
+          placeholder="未分配"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </label>
+      <button
+        className="button button-primary"
+        type="button"
+        disabled={!hasTeamBudget || invalid || mutation.isPending}
+        onClick={() => mutation.mutate()}
+      >
+        {mutation.isPending ? '保存中' : '保存'}
+      </button>
       {mutation.isError ? <p role="alert">{mutation.error.message}</p> : null}
       {mutation.isSuccess ? <p className="is-success">已更新</p> : null}
     </div>

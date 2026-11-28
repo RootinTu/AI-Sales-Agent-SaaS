@@ -250,4 +250,62 @@ class AiModelServiceTests {
 				.isInstanceOf(TokenQuotaExceededException.class)
 				.hasMessageContaining("尚未");
 	}
+
+	@Test
+	void supportsAgentModelSwitchingWithoutConsumingMcpQuotaAndEnforcesSeparateEmbeddingQuota() {
+		var memberId = UUID.randomUUID();
+		var client = mock(AiOrchestrationClient.class);
+		var mapper = mock(AiModelConfigurationMapper.class);
+		var modelCallMapper = mock(ModelCallMapper.class);
+		var cipher = mock(SecretCipher.class);
+		var existing = AiModelConfiguration.create(
+				organizationId,
+				"QWEN",
+				"qwen4-max",
+				"qwen3.7-text-embedding-flash",
+				"https://dashscope.aliyuncs.com/compatible-mode/v1",
+				"enc-qwen",
+				clock.instant());
+		existing.updateAgentConfiguration(
+				"VOLCENGINE_ARK",
+				"doubao-seed-2.1-pro",
+				"https://ark.cn-beijing.volces.com/api/plan/v3",
+				"enc-ark",
+				"doubao-seed-2.1-pro,deepseek-v4-pro,kimi-k3",
+				clock.instant());
+		when(mapper.selectById(organizationId)).thenReturn(existing);
+		when(cipher.decrypt(organizationId, "enc-ark")).thenReturn("ark-secret");
+		when(cipher.decrypt(organizationId, "enc-qwen")).thenReturn("qwen-secret");
+		// MCP 免费普通额度已耗尽，但向量模型配额独立校验
+		when(modelCallMapper.selectMemberTokenUsage(organizationId, memberId))
+				.thenReturn(new MemberTokenUsageRow(10_000L, 10_000L, 50_000L, 50_000L, 200_000L));
+
+		var service = new AiModelService(
+				client,
+				mapper,
+				modelCallMapper,
+				cipher,
+				new AiModelDefaultsProperties("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+				clock);
+
+		var status = service.status(organizationId, memberId);
+		assertThat(status.agent().availableModels()).containsExactly("doubao-seed-2.1-pro", "deepseek-v4-pro", "kimi-k3");
+		assertThat(status.usage().memberEmbeddingAllocatedTokens()).isEqualTo(50_000L);
+		assertThat(status.usage().memberEmbeddingRemainingTokens()).isEqualTo(0L);
+
+		// 切到独立 Agent 通道内的 deepseek-v4-pro，不受 MCP 免费额度耗尽限制
+		var resolvedAgent = service.resolveAgentRuntimeConfiguration(organizationId, memberId, "deepseek-v4-pro");
+		assertThat(resolvedAgent.independentChannel()).isTrue();
+		assertThat(resolvedAgent.configuration().model()).isEqualTo("deepseek-v4-pro");
+		assertThat(resolvedAgent.configuration().provider()).isEqualTo("VOLCENGINE_ARK");
+
+		// 切回默认 MCP 模型 qwen4-max 时会校验 MCP 普通对话额度
+		assertThatThrownBy(() -> service.resolveAgentRuntimeConfiguration(organizationId, memberId, "qwen4-max"))
+				.isInstanceOf(TokenQuotaExceededException.class);
+
+		// 向量模型独立额度耗尽时会触发向量配额异常
+		assertThatThrownBy(() -> service.requireAvailableEmbeddingQuota(organizationId, memberId))
+				.isInstanceOf(TokenQuotaExceededException.class)
+				.hasMessageContaining("向量模型");
+	}
 }

@@ -19,12 +19,34 @@ public record AdminMemberResponse(
 		Instant createdAt,
 		Long allocatedTokens,
 		long usedTokens,
-		Long remainingTokens) {
+		Long remainingTokens,
+		Long embeddingAllocatedTokens,
+		long embeddingUsedTokens,
+		Long embeddingRemainingTokens) {
+
+	public AdminMemberResponse(
+			UUID id,
+			UUID userId,
+			String email,
+			String displayName,
+			MemberRole role,
+			MemberStatus status,
+			Instant joinedAt,
+			Instant lastLoginAt,
+			Instant createdAt,
+			Long allocatedTokens,
+			long usedTokens,
+			Long remainingTokens) {
+		this(id, userId, email, displayName, role, status, joinedAt, lastLoginAt, createdAt,
+				allocatedTokens, usedTokens, remainingTokens, null, 0L, null);
+	}
 
 	public static AdminMemberResponse from(AdminMemberRow row) {
 		return new AdminMemberResponse(
 				row.id(), row.userId(), row.email(), row.displayName(), row.role(), row.status(),
 				row.joinedAt(), row.lastLoginAt(), row.createdAt(), row.allocatedTokens(), row.usedTokens(),
-				row.allocatedTokens() == null ? null : Math.max(0, row.allocatedTokens() - row.usedTokens()));
+				row.allocatedTokens() == null ? null : Math.max(0, row.allocatedTokens() - row.usedTokens()),
+				row.embeddingAllocatedTokens(), row.embeddingUsedTokens(),
+				row.embeddingAllocatedTokens() == null ? null : Math.max(0, row.embeddingAllocatedTokens() - row.embeddingUsedTokens()));
 	}
 }
