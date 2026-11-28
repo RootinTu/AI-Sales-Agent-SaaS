@@ -143,7 +143,7 @@ public class PythonAiClient {
 		var payload = modelPayload(configuration);
 		payload.put("query", query);
 		payload.put("candidates", candidates);
-		payload.put("top_k", 5);
+		payload.put("top_k", 6);
 		return post("/v1/knowledge/query", payload, PythonKnowledgeAnswer.class);
 	}
 

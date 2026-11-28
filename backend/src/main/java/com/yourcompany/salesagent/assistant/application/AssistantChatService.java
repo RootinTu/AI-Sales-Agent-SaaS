@@ -290,7 +290,9 @@ public class AssistantChatService {
 				events.accept("delta", Map.of("text", result.content()));
 			}
 			else try {
-				var configuration = aiModelService.requireRuntimeConfiguration(principal.organizationId(), principal.memberId());
+				var configuration = "AGENT".equals(mode)
+						? aiModelService.requireAgentRuntimeConfiguration(principal.organizationId(), principal.memberId())
+						: aiModelService.requireRuntimeConfiguration(principal.organizationId(), principal.memberId());
 				var verifiedResult = objectMapper.writeValueAsString(result);
 				var startedAt = clock.instant();
 				var streamUsage = new AtomicReference<ModelUsage>();
@@ -321,6 +323,7 @@ public class AssistantChatService {
 				}
 				recordAssistantModelCall(
 						principal,
+						configuration.provider(),
 						configuration.model(),
 						responseModel.get(),
 						providerRequestId.get(),
@@ -494,7 +497,7 @@ public class AssistantChatService {
 					"AI 规划服务暂时不可用，请联系管理员检查 AI 服务地址和内部令牌配置。", exception);
 		}
 		var completedAt = clock.instant();
-		recordPlannerModelCall(principal, configuration.model(), plan, startedAt, completedAt, message);
+		recordPlannerModelCall(principal, configuration.provider(), configuration.model(), plan, startedAt, completedAt, message);
 		traces.add(new AssistantToolTrace("assistant.langgraph.plan", "SUCCEEDED",
 				"已识别意图：" + plan.intent() + (StringUtils.hasText(plan.toolName()) ? "，候选工具：" + plan.toolName() : "")));
 
@@ -553,7 +556,7 @@ public class AssistantChatService {
 		}
 		com.yourcompany.salesagent.ai.application.AiModelRuntimeConfiguration configuration;
 		try {
-			configuration = aiModelService.requireRuntimeConfiguration(principal.organizationId(), principal.memberId());
+			configuration = aiModelService.requireAgentRuntimeConfiguration(principal.organizationId(), principal.memberId());
 		}
 		catch (AiModelNotConfiguredException exception) {
 			throw new AssistantWorkflowException("请先在设置中配置并启用 AI 模型，再使用自主 Agent 模式。");
@@ -586,7 +589,7 @@ public class AssistantChatService {
 						"自主 Agent 规划服务暂时不可用，请联系管理员检查 AI 服务地址和内部令牌配置。", exception);
 			}
 			lastPlan = plan;
-			recordAgentStepModelCall(principal, configuration.model(), plan, startedAt, clock.instant(), message, step);
+			recordAgentStepModelCall(principal, configuration.provider(), configuration.model(), plan, startedAt, clock.instant(), message, step);
 
 			if (StringUtils.hasText(plan.thought())) {
 				events.accept("progress", Map.of("text", "第 " + step + " 步思考：" + plan.thought()));
@@ -1127,6 +1130,7 @@ public class AssistantChatService {
 
 	private void recordPlannerModelCall(
 			AuthPrincipal principal,
+			String provider,
 			String configuredModel,
 			AssistantPlan plan,
 			java.time.Instant startedAt,
@@ -1140,7 +1144,7 @@ public class AssistantChatService {
 					null,
 					null,
 					"PLANNING",
-					"QWEN",
+					StringUtils.hasText(provider) ? provider : "QWEN",
 					StringUtils.hasText(plan.model()) ? plan.model() : configuredModel,
 					plan.providerRequestId(),
 					"mcp-assistant-langgraph-plan-v1",
@@ -1274,6 +1278,7 @@ public class AssistantChatService {
 
 	private void recordAssistantModelCall(
 			AuthPrincipal principal,
+			String provider,
 			String configuredModel,
 			String responseModel,
 			String providerRequestId,
@@ -1291,7 +1296,7 @@ public class AssistantChatService {
 					null,
 					null,
 					"SUMMARY",
-					"QWEN",
+					StringUtils.hasText(provider) ? provider : "QWEN",
 					StringUtils.hasText(responseModel) ? responseModel : configuredModel,
 					providerRequestId,
 					"mcp-assistant-summary-v1",
@@ -1861,6 +1866,7 @@ public class AssistantChatService {
 
 	private void recordAgentStepModelCall(
 			AuthPrincipal principal,
+			String provider,
 			String configuredModel,
 			AgentStepPlan plan,
 			java.time.Instant startedAt,
@@ -1875,7 +1881,7 @@ public class AssistantChatService {
 					null,
 					null,
 					"AGENT_PLAN",
-					"QWEN",
+					StringUtils.hasText(provider) ? provider : "QWEN",
 					StringUtils.hasText(plan.model()) ? plan.model() : configuredModel,
 					plan.providerRequestId(),
 					"mcp-assistant-agent-react-v1",

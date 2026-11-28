@@ -65,6 +65,7 @@ class AssistantStreamingTests {
 		doAnswer(invocation -> { events.add("commit"); return null; }).when(tx).commit(any());
 		when(approvals.findApprovals(principal, "PENDING", 0, 10)).thenReturn(Page.of(1, 10));
 		when(settings.requireRuntimeConfiguration(any(), any())).thenReturn(new AiModelRuntimeConfiguration("QWEN", "test", "https://example.test", "test-key"));
+		when(settings.requireAgentRuntimeConfiguration(any(), any())).thenReturn(new AiModelRuntimeConfiguration("VOLCENGINE_ARK", "doubao-seed-2.1-pro", "https://ark.cn-beijing.volces.com/api/plan/v3", "ark-agent-key"));
 		when(model.planAssistantAction(any(), anyString(), anyMap(), anyList())).thenAnswer(invocation -> {
 			var message = invocation.getArgument(1, String.class);
 			if (message.contains("待审批")) {
@@ -361,8 +362,11 @@ class AssistantStreamingTests {
 		assertThat(saved.data()).containsKey("knowledgeSources");
 		assertThat(saved.toolTraces()).extracting(AssistantChatResponse.AssistantToolTrace::name)
 				.contains("assistant.agent.step", "customer.detail", "knowledge.query", "email.draft.intelligent");
+		verify(model, org.mockito.Mockito.atLeastOnce()).planAgentStep(
+				argThat(cfg -> "VOLCENGINE_ARK".equals(cfg.provider()) && "doubao-seed-2.1-pro".equals(cfg.model())),
+				anyString(), eq("AGENT"), anyMap(), anyList(), anyList(), anyList());
 		verify(model).streamAssistantReplyWithUsage(
-				any(),
+				argThat(cfg -> "VOLCENGINE_ARK".equals(cfg.provider()) && "doubao-seed-2.1-pro".equals(cfg.model())),
 				anyString(),
 				anyString(),
 				eq("AGENT"),

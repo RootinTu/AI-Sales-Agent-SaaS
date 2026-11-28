@@ -80,6 +80,13 @@
             <if test="document != null">AND d.id = #{document}</if>
         ORDER BY c.embedding &lt;=&gt; CAST(#{queryEmbedding} AS vector) ASC, c.id LIMIT 30
     </select>
+    <select id="selectAdjacentChunks" resultType="com.yourcompany.salesagent.knowledge.api.KnowledgeChunkResponse">
+        <include refid="ChunkSelect" /> AND d.enabled = true AND d.status = 'READY'
+        AND d.id = #{documentId}
+        AND c.chunk_index IN
+        <foreach collection="indexes" item="idx" open="(" separator="," close=")">#{idx}</foreach>
+        ORDER BY c.chunk_index
+    </select>
     <select id="selectDocumentsNeedingEmbedding" resultMap="DocumentMap">
         <include refid="DocumentSelect" />
         AND d.status = 'READY' AND d.enabled = true AND d.chunk_count &gt; 0

@@ -177,4 +177,34 @@ class KnowledgeServiceTests {
 		verify(mapper).insertChunk(eq(org), any(), eq(row.getId()), eq(1L), eq(0), isNull(), eq("折扣审批规则"), eq("折扣 审批"), eq("[0.25,-0.5]"), eq("qwen3.7-text-embedding-flash"));
 		verify(recorder).record(argThat(call -> "KNOWLEDGE_EMBEDDING".equals(call.purpose()) && call.usage().totalTokens() == 15));
 	}
+	@Test
+	void expandsAdjacentChunkRecordsTelemetryAndPreservesRefusalWithoutSources() {
+		var page1 = UUID.randomUUID();
+		var page2 = UUID.randomUUID();
+		when(python.prepareKnowledgeSearch(eq("成都专户限额"), any(), eq(1024)))
+				.thenReturn(new PythonAiClient.PythonSearchTerms("成都 | 专户 | 限额", List.of(0.3, 0.4), "qwen3.7-text-embedding-flash", null, null));
+		when(mapper.selectVectorCandidates(org, member, "[0.3,0.4]", "qwen3.7-text-embedding-flash", null))
+				.thenReturn(List.of(new KnowledgeVectorCandidateRow(page1, document, 0, 1, "成都规程", "一、适用范围", 1, 0.85)));
+		when(mapper.selectCandidates(org, member, "成都 | 专户 | 限额", null)).thenReturn(List.of());
+		when(mapper.selectAdjacentChunks(org, member, document, List.of(1)))
+				.thenReturn(List.of(new KnowledgeChunkResponse(page2, document, 1, 2, "成都规程", "单笔300万，T+3", 1)));
+		when(python.answerKnowledge(any(), eq("成都专户限额"), argThat(list -> list.size() == 2
+				&& page2.toString().equals(list.get(1).get("id"))
+				&& Boolean.TRUE.equals(((Map<?, ?>) list.get(1).get("metadata")).get("adjacent")))))
+				.thenReturn(new PythonAiClient.PythonKnowledgeAnswer(
+						"当前知识库中没有相关记载，无法确认。",
+						new PythonAiClient.PythonUsage(15, 8, 23, 0L),
+						"req-refusal",
+						"qwen4-max",
+						List.of()));
+
+		var response = service.ask(actor("SALES"), new KnowledgeQueryRequest("成都专户限额", null));
+
+		assertThat(response.sources()).isEmpty();
+		assertThat(response.content()).isEqualTo("当前知识库中没有相关记载，无法确认。");
+		verify(recorder).record(argThat(call -> "KNOWLEDGE_QA".equals(call.purpose())
+				&& call.inputSnapshot().containsKey("embedMs")
+				&& call.inputSnapshot().containsKey("vectorDbMs")
+				&& call.inputSnapshot().containsKey("adjacentDbMs")));
+	}
 }
