@@ -375,6 +375,10 @@ function AssistantOutput({ message }: { message: ChatMessage }) {
         ? [{ documentId: item.documentId, title: item.title, pageNumber: typeof item.pageNumber === 'number' ? item.pageNumber : null }]
         : []
     }) : []
+  const hasInlineCitations = knowledgeSources.length > 0 && /\[资料\s*\d+/.test(message.content)
+  const uniqueFallbackSources = hasInlineCitations
+    ? []
+    : knowledgeSources.filter((source, index, list) => list.findIndex((item) => item.documentId === source.documentId) === index)
   return (
     <div className="mcp-assistant-output">
       {message.streaming ? (
@@ -406,16 +410,16 @@ function AssistantOutput({ message }: { message: ChatMessage }) {
             {isAgentMode ? <em className="mcp-output-mode-badge">自主 Agent</em> : null}
           </header>
           <div className="mcp-output-body">
-            {message.content ? <MarkdownContent content={message.content} /> : null}
+            {message.content ? <MarkdownContent content={message.content} citations={knowledgeSources} /> : null}
             {message.streaming && message.content ? <span className="mcp-stream-cursor" aria-hidden>▍</span> : null}
           </div>
         </section>
       ) : null}
-      {knowledgeSources.length > 0 && (
+      {uniqueFallbackSources.length > 0 && (
         <div className="mcp-knowledge-sources" aria-label="知识库引用">
-          {knowledgeSources.map((source, index) => (
+          {uniqueFallbackSources.map((source, index) => (
             <Link key={`${source.documentId}-${index}`} to={`/app/knowledge?document=${encodeURIComponent(source.documentId)}`}>
-              [资料 {index + 1}] {source.title}{source.pageNumber ? ` · 第 ${source.pageNumber} 页` : ''}
+              {source.title}{source.pageNumber ? ` · 第 ${source.pageNumber} 页` : ''}
             </Link>
           ))}
         </div>

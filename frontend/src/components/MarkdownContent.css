@@ -22,6 +22,35 @@
 .markdown-content li + li { margin-top: .25em; }
 .markdown-content li > :is(ul, ol) { margin-block: .25em; }
 .markdown-content a { color: var(--blue-600); text-decoration: underline; text-underline-offset: 3px; }
+.markdown-content .markdown-citation-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 156px;
+  padding: 1px 9px;
+  margin: 0 3px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #f0f6ff;
+  color: #1d4ed8;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+  white-space: nowrap;
+  vertical-align: 1px;
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s, color .15s;
+}
+.markdown-content .markdown-citation-pill:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+.markdown-content .markdown-citation-pill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .markdown-content blockquote { margin: 1em 0; padding: 2px 16px; border-left: 3px solid var(--border-strong); color: var(--muted); }
 .markdown-content code { padding: 2px 5px; border-radius: 4px; background: #f1f4f8; font-family: Consolas, 'Courier New', monospace; font-size: .9em; }
 .markdown-content pre { max-width: 100%; margin: 1em 0; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; background: #f7f9fc; white-space: pre; overflow-wrap: normal; line-height: 1.6; }
