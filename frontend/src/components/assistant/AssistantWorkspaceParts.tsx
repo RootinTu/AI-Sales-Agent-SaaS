@@ -25,6 +25,12 @@ import { useIsGuest } from '../../auth/use-auth'
 import { MarkdownContent } from '../MarkdownContent'
 import { AssistantActivity } from './AssistantActivity'
 import {
+  AGENT_PLAN_SMALL_DEFAULTS,
+  formatAfpCoeff,
+  formatAfpValue,
+  getAgentModelMeta,
+} from './agent-model-catalog'
+import {
   formatCompactNumber,
   formatFileSize,
   formatTime,
@@ -248,6 +254,14 @@ export function AgentUsagePanel({
     : agentConfig?.enabled
       ? '当前切回默认通道'
       : '沿用默认模型'
+  const activeMeta = getAgentModelMeta(activeModel || status?.model || '')
+  const showAfpMeters = usesIndependentChannel && providerCode === 'VOLCENGINE_ARK'
+  const fiveHourAfp = agentUsage?.last5HoursAfp ?? 0
+  const weeklyAfp = agentUsage?.last7DaysAfp ?? 0
+  const monthlyAfp = agentUsage?.last30DaysAfp ?? 0
+  const fiveHourLimit = agentUsage?.fiveHourAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.fiveHourAfp
+  const weeklyLimit = agentUsage?.weeklyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.weeklyAfp
+  const monthlyLimit = agentUsage?.monthlyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.monthlyAfp
 
   return (
     <section className="mcp-model-panel agent-usage-panel" aria-label="自主 Agent 用量统计">
@@ -260,9 +274,19 @@ export function AgentUsagePanel({
       ) : (
         <>
           <div className="agent-usage-active-model">
-            <small>{providerLabel}</small>
+            <small>
+              {providerLabel}
+              {activeMeta.afpCoeff != null ? ` · ${activeMeta.tierLabel} · ${formatAfpCoeff(activeMeta.afpCoeff)} AFP` : ''}
+            </small>
             <strong><Sparkle size={13} />{activeModel || status?.model || '-'}</strong>
           </div>
+          {showAfpMeters ? (
+            <div className="agent-afp-windows" aria-label="Agent 燃料值 AFP 估算">
+              <AfpWindowRow label="近 5 小时" used={fiveHourAfp} limit={fiveHourLimit} />
+              <AfpWindowRow label="近一周" used={weeklyAfp} limit={weeklyLimit} />
+              <AfpWindowRow label="近一月" used={monthlyAfp} limit={monthlyLimit} />
+            </div>
+          ) : null}
           <div className="mcp-usage-breakdown">
             <span>
               <small>Agent 累计 Token</small>
@@ -276,6 +300,7 @@ export function AgentUsagePanel({
           {agentTotalTokens > 0 ? (
             <p className="agent-usage-io-note">
               输入 {formatCompactNumber(agentUsage?.inputTokens ?? 0)} · 输出 {formatCompactNumber(agentUsage?.outputTokens ?? 0)}
+              {showAfpMeters ? ` · 累计约 ${formatAfpValue(agentUsage?.totalEstimatedAfp ?? 0)} AFP` : ''}
             </p>
           ) : null}
           {topModels.length > 0 ? (
@@ -283,13 +308,16 @@ export function AgentUsagePanel({
               {topModels.map((item) => (
                 <div key={`${item.provider}:${item.model}`}>
                   <code>{item.model}</code>
-                  <span>{formatCompactNumber(item.totalTokens)}</span>
+                  <span>
+                    {formatCompactNumber(item.totalTokens)}
+                    {item.estimatedAfp != null && item.provider === 'VOLCENGINE_ARK' ? ` · ${formatAfpValue(item.estimatedAfp)} AFP` : ''}
+                  </span>
                 </div>
               ))}
             </div>
           ) : (
             <p className="agent-usage-io-note">
-              {usesIndependentChannel ? '独立套餐通道计费，不占用 MCP 免费对话配额。' : '可在设置中开启火山方舟 Agent Plan 独立通道。'}
+              {usesIndependentChannel ? '独立套餐按 AFP 燃料值抵扣，不占用 MCP 免费对话配额。' : '可在设置中开启火山方舟 Agent Plan 独立通道。'}
             </p>
           )}
           <Link to="/app/settings#model" className="mcp-quota-button agent-settings-link">
@@ -300,6 +328,21 @@ export function AgentUsagePanel({
         </>
       )}
     </section>
+  )
+}
+
+function AfpWindowRow({ label, used, limit }: { label: string; used: number; limit: number }) {
+  const ratio = limit > 0 ? Math.min(100, Math.round((used / limit) * 1000) / 10) : 0
+  return (
+    <div className="agent-afp-row">
+      <div className="agent-afp-row-head">
+        <span>{label}</span>
+        <strong>{formatAfpValue(used)} / {formatCompactNumber(limit)} AFP</strong>
+      </div>
+      <div className="agent-afp-bar" aria-hidden>
+        <span style={{ width: `${Math.min(100, ratio)}%` }} />
+      </div>
+    </div>
   )
 }
 

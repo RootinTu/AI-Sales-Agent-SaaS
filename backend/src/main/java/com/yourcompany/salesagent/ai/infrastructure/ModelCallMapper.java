@@ -93,6 +93,25 @@ public interface ModelCallMapper {
 			FROM model_call
 			WHERE organization_id = #{organizationId}
 			  AND status = 'SUCCEEDED'
+			  AND (purpose = 'AGENT_PLAN' OR COALESCE(input_snapshot->>'mode', '') = 'AGENT')
+			  AND COALESCE(completed_at, started_at) >= #{since}
+			GROUP BY provider, model
+			""")
+	List<ModelUsageBreakdownRow> selectAgentUsageByModelSince(
+			@Param("organizationId") UUID organizationId,
+			@Param("since") Instant since);
+
+	@Select("""
+			SELECT provider,
+			       model,
+			       COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+			       COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+			       COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+			       COUNT(*)::bigint AS successful_calls,
+			       MAX(completed_at) AS last_called_at
+			FROM model_call
+			WHERE organization_id = #{organizationId}
+			  AND status = 'SUCCEEDED'
 			GROUP BY provider, model
 			ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC, model ASC
 			""")

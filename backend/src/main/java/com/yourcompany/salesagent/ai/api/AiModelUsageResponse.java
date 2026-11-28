@@ -98,7 +98,20 @@ public record AiModelUsageResponse(
 			long cachedInputTokens,
 			long totalTokens,
 			long successfulCalls,
-			Instant lastCalledAt) {
+			Instant lastCalledAt,
+			Double estimatedAfp) {
+
+		public ModelUsageItem(
+				String provider,
+				String model,
+				long inputTokens,
+				long outputTokens,
+				long cachedInputTokens,
+				long totalTokens,
+				long successfulCalls,
+				Instant lastCalledAt) {
+			this(provider, model, inputTokens, outputTokens, cachedInputTokens, totalTokens, successfulCalls, lastCalledAt, null);
+		}
 	}
 
 	public record AgentUsageSummary(
@@ -108,7 +121,26 @@ public record AiModelUsageResponse(
 			long totalTokens,
 			long successfulCalls,
 			Instant lastCalledAt,
-			List<ModelUsageItem> models) {
+			List<ModelUsageItem> models,
+			double totalEstimatedAfp,
+			double last5HoursAfp,
+			double last7DaysAfp,
+			double last30DaysAfp,
+			double fiveHourAfpLimit,
+			double weeklyAfpLimit,
+			double monthlyAfpLimit) {
+
+		public AgentUsageSummary(
+				long inputTokens,
+				long outputTokens,
+				long cachedInputTokens,
+				long totalTokens,
+				long successfulCalls,
+				Instant lastCalledAt,
+				List<ModelUsageItem> models) {
+			this(inputTokens, outputTokens, cachedInputTokens, totalTokens, successfulCalls, lastCalledAt, models,
+					0.0, 0.0, 0.0, 0.0, 2000.0, 7000.0, 20000.0);
+		}
 
 		public static AgentUsageSummary empty() {
 			return new AgentUsageSummary(0L, 0L, 0L, 0L, 0L, null, List.of());

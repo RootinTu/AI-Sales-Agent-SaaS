@@ -240,7 +240,7 @@ describe('AgentWorkspacePage', () => {
         apiKeyConfigured: true,
         ready: true,
         status: 'READY',
-        availableModels: ['doubao-seed-2.1-pro', 'deepseek-v4-pro', 'kimi-k3'],
+        availableModels: ['doubao-seed-2.0-mini', 'doubao-seed-2.1-lite', 'doubao-seed-2.1-pro', 'deepseek-v4-pro', 'kimi-k3.1-pro'],
       },
       usage: {
         inputTokens: 100,
@@ -262,6 +262,13 @@ describe('AgentWorkspacePage', () => {
           totalTokens: 2000,
           successfulCalls: 6,
           lastCalledAt: '2026-11-18T09:00:00Z',
+          totalEstimatedAfp: 0.5,
+          last5HoursAfp: 0.5,
+          last7DaysAfp: 0.5,
+          last30DaysAfp: 0.5,
+          fiveHourAfpLimit: 2000,
+          weeklyAfpLimit: 7000,
+          monthlyAfpLimit: 20000,
           models: [{
             provider: 'VOLCENGINE_ARK',
             model: 'doubao-seed-2.1-pro',
@@ -271,6 +278,7 @@ describe('AgentWorkspacePage', () => {
             totalTokens: 2000,
             successfulCalls: 6,
             lastCalledAt: '2026-11-18T09:00:00Z',
+            estimatedAfp: 0.5,
           }],
         },
       },
@@ -288,18 +296,27 @@ describe('AgentWorkspacePage', () => {
     const user = userEvent.setup()
     mountAgentWorkspace()
 
-    // 独立 Agent 用量面板存在，且不出现 MCP Token 分配按钮
-    expect(await screen.findByLabelText('自主 Agent 用量统计')).toBeInTheDocument()
-    expect(await screen.findByText('独立通道已就绪')).toBeInTheDocument()
+    // 左侧栏不再堆叠 MCP Token 分配按钮，点击顶栏用量胶囊即可展开独立 Agent AFP 统计
     expect(screen.queryByRole('button', { name: 'Token 分配' })).not.toBeInTheDocument()
+    const usagePill = await screen.findByRole('button', { name: '查看自主 Agent 通道与用量' })
+    await user.click(usagePill)
+    expect(await screen.findByLabelText('自主 Agent 用量统计')).toBeInTheDocument()
+    expect(screen.getByText('独立通道已就绪')).toBeInTheDocument()
+    expect(screen.getByLabelText('Agent 燃料值 AFP 估算')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看完整看板' }))
+    expect(await screen.findByRole('heading', { name: 'Agent 通道与燃料值（AFP）看板' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '回到自主对话' }))
 
-    // 左下角一键选模型：从 doubao-seed-2.1-pro 切换到 deepseek-v4-pro
+    // 左下角一键选模型：按极速/标准/进阶分组展示，切换到 deepseek-v4-pro
     await user.click(screen.getByRole('button', { name: '选择 Agent 模型' }))
+    expect(screen.getByText('文本生成（极速）')).toBeInTheDocument()
+    expect(screen.getByText('文本生成（标准）')).toBeInTheDocument()
+    expect(screen.getByText('文本生成（进阶）')).toBeInTheDocument()
     await user.click(screen.getByRole('option', { name: /deepseek-v4-pro/ }))
 
     // 切换到「存本地」会话存储模式
     await user.click(screen.getByRole('button', { name: /存本地/ }))
-    expect(screen.getByText(/对话仅保存于当前设备本地/)).toBeInTheDocument()
+    expect(screen.getByText(/仅存本机，不写入云端会话表/)).toBeInTheDocument()
 
     await user.type(screen.getByPlaceholderText(/自主 Agent 模式/), '帮我梳理本地草稿')
     await user.click(screen.getByRole('button', { name: /发送指令/ }))
