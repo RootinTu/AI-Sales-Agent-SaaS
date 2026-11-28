@@ -24,6 +24,7 @@ export interface AiModelUsageBreakdownItem {
   totalTokens: number
   successfulCalls: number
   lastCalledAt: string | null
+  estimatedAfp?: number | null
 }
 
 export interface AiAgentUsageSummary {
@@ -34,6 +35,13 @@ export interface AiAgentUsageSummary {
   successfulCalls: number
   lastCalledAt: string | null
   models: AiModelUsageBreakdownItem[]
+  totalEstimatedAfp?: number
+  last5HoursAfp?: number
+  last7DaysAfp?: number
+  last30DaysAfp?: number
+  fiveHourAfpLimit?: number
+  weeklyAfpLimit?: number
+  monthlyAfpLimit?: number
 }
 
 export interface AiModelStatus {

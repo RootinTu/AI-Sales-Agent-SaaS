@@ -1,9 +1,14 @@
 package com.yourcompany.salesagent.ai.application;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -30,12 +35,52 @@ public class AiModelService {
 
 	public static final String DEFAULT_AGENT_PROVIDER = "VOLCENGINE_ARK";
 	public static final String DEFAULT_AGENT_BASE_URL = "https://ark.cn-beijing.volces.com/api/plan/v3";
+	public static final String DEFAULT_AGENT_MODEL = "doubao-seed-2.1-pro";
+	public static final double DEFAULT_AGENT_5H_AFP_LIMIT = 2000.0;
+	public static final double DEFAULT_AGENT_7D_AFP_LIMIT = 7000.0;
+	public static final double DEFAULT_AGENT_30D_AFP_LIMIT = 20000.0;
+	/**
+	 * 方舟 Agent Plan 文本生成模型默认预设（按极速 / 标准 / 进阶分层，已排除即将下线的 kimi-k3）。
+	 * 默认主模型为 doubao-seed-2.1-pro（进阶 2.5x，兼顾推理深度与 Small 套餐 AFP 窗口）。
+	 */
 	public static final List<String> DEFAULT_VOLCENGINE_AGENT_MODELS = List.of(
+			// 极速（0.25x AFP）
+			"doubao-seed-2.0-mini",
+			// 标准（0.5x AFP）
+			"doubao-seed-2.1-lite",
+			"deepseek-v4-flash",
+			"glm-5.3-flash",
+			// 进阶（2x ~ 8x AFP）
+			"deepseek-v4.1-flash-economy",
 			"doubao-seed-2.1-pro",
 			"doubao-seed-evolving",
-			"deepseek-v4-pro",
+			"deepseek-v4.1-flash",
 			"glm-5.3",
-			"kimi-k3");
+			"glm-5.4",
+			"deepseek-v4-pro",
+			"kimi-k3.1-pro",
+			"kimi-k2.8-preview");
+
+	/**
+	 * 官方方舟 Agent Plan 文本生成模型 AFP 抵扣系数（单位：AFP / 万 token，输入与输出不含音频时同系数）。
+	 */
+	private static final Map<String, Double> ARK_TEXT_AFP_COEFFICIENTS = Map.ofEntries(
+			Map.entry("doubao-seed-2.0-mini", 0.25),
+			Map.entry("deepseek-v4-flash", 0.5),
+			Map.entry("glm-5.3-flash", 0.5),
+			Map.entry("doubao-seed-2.1-lite", 0.5),
+			Map.entry("deepseek-v4.1-flash-economy", 2.0),
+			Map.entry("doubao-seed-evolving", 2.5),
+			Map.entry("doubao-seed-2.1-pro", 2.5),
+			Map.entry("deepseek-v4.1-flash", 2.5),
+			Map.entry("glm-5.3", 4.5),
+			Map.entry("glm-latest", 4.5),
+			Map.entry("glm-5.4", 4.5),
+			Map.entry("deepseek-v4-pro", 5.5),
+			Map.entry("kimi-k3.1-pro", 7.0),
+			Map.entry("kimi-k3", 7.0),
+			Map.entry("kimi-k2.8-preview", 8.0),
+			Map.entry("doubao-embedding-vision", 0.5));
 
 	public record ResolvedAgentModel(
 			AiModelRuntimeConfiguration configuration,
@@ -490,6 +535,11 @@ public class AiModelService {
 		var agentInputTokens = agentSummary == null ? 0L : agentSummary.getInputTokens();
 		var agentOutputTokens = agentSummary == null ? 0L : agentSummary.getOutputTokens();
 		var agentCachedInputTokens = agentSummary == null ? 0L : agentSummary.getCachedInputTokens();
+		var now = clock.instant();
+		var totalEstimatedAfp = sumEstimatedAfp(agentModelItems);
+		var last5HoursAfp = sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, now.minus(Duration.ofHours(5))));
+		var last7DaysAfp = sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, now.minus(Duration.ofDays(7))));
+		var last30DaysAfp = sumRowsAfp(modelCallMapper.selectAgentUsageByModelSince(organizationId, now.minus(Duration.ofDays(30))));
 		var agentUsage = new AiModelUsageResponse.AgentUsageSummary(
 				agentInputTokens,
 				agentOutputTokens,
@@ -497,7 +547,14 @@ public class AiModelService {
 				agentInputTokens + agentOutputTokens,
 				agentSummary == null ? 0L : agentSummary.getSuccessfulCalls(),
 				agentSummary == null ? null : agentSummary.getLastCalledAt(),
-				agentModelItems);
+				agentModelItems,
+				totalEstimatedAfp,
+				last5HoursAfp,
+				last7DaysAfp,
+				last30DaysAfp,
+				DEFAULT_AGENT_5H_AFP_LIMIT,
+				DEFAULT_AGENT_7D_AFP_LIMIT,
+				DEFAULT_AGENT_30D_AFP_LIMIT);
 		return new AiModelUsageResponse(
 				inputTokens,
 				outputTokens,
@@ -537,7 +594,72 @@ public class AiModelService {
 						row.getCachedInputTokens(),
 						row.getInputTokens() + row.getOutputTokens(),
 						row.getSuccessfulCalls(),
-						row.getLastCalledAt()))
+						row.getLastCalledAt(),
+						estimateAfp(row.getProvider(), row.getModel(), row.getInputTokens(), row.getOutputTokens())))
 				.toList();
+	}
+
+	/**
+	 * 按方舟 Agent Plan 官方 AFP 规则折算文本模型燃料值：
+	 * AFP = (输入 token × 输入抵扣系数 + 输出 token × 输出抵扣系数) / 10,000。
+	 */
+	static Double estimateAfp(String provider, String model, long inputTokens, long outputTokens) {
+		if (model == null || (inputTokens <= 0 && outputTokens <= 0)) {
+			return 0.0;
+		}
+		var coeff = resolveAfpCoefficient(provider, model);
+		if (coeff == null) {
+			return null;
+		}
+		var raw = ((inputTokens * coeff) + (outputTokens * coeff)) / 10_000.0;
+		return roundAfp(raw);
+	}
+
+	private static Double resolveAfpCoefficient(String provider, String model) {
+		if (model == null) {
+			return null;
+		}
+		var normalized = model.strip().toLowerCase(Locale.ROOT);
+		var exact = ARK_TEXT_AFP_COEFFICIENTS.get(normalized);
+		if (exact != null) {
+			return exact;
+		}
+		for (var entry : ARK_TEXT_AFP_COEFFICIENTS.entrySet()) {
+			if (normalized.startsWith(entry.getKey())) {
+				return entry.getValue();
+			}
+		}
+		return DEFAULT_AGENT_PROVIDER.equalsIgnoreCase(provider) ? 2.5 : null;
+	}
+
+	private static double sumEstimatedAfp(List<AiModelUsageResponse.ModelUsageItem> items) {
+		if (items == null || items.isEmpty()) {
+			return 0.0;
+		}
+		double total = 0.0;
+		for (var item : items) {
+			if (item.estimatedAfp() != null) {
+				total += item.estimatedAfp();
+			}
+		}
+		return roundAfp(total);
+	}
+
+	private static double sumRowsAfp(List<com.yourcompany.salesagent.ai.infrastructure.ModelUsageBreakdownRow> rows) {
+		if (rows == null || rows.isEmpty()) {
+			return 0.0;
+		}
+		double total = 0.0;
+		for (var row : rows) {
+			var afp = estimateAfp(row.getProvider(), row.getModel(), row.getInputTokens(), row.getOutputTokens());
+			if (afp != null) {
+				total += afp;
+			}
+		}
+		return roundAfp(total);
+	}
+
+	private static double roundAfp(double value) {
+		return BigDecimal.valueOf(value).setScale(3, RoundingMode.HALF_UP).doubleValue();
 	}
 }

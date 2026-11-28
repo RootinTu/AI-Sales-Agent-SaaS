@@ -7,6 +7,11 @@ import { getSystemHealth } from '../api/system-api'
 import { SelectField } from '../components/forms/SelectField'
 import { useIsGuest } from '../auth/use-auth'
 import { MailAccountSettings } from '../components/mail/MailAccountSettings'
+import {
+  DEFAULT_AGENT_MODEL,
+  formatAfpValue,
+  VOLCENGINE_AGENT_PRESET_MODELS,
+} from '../components/assistant/agent-model-catalog'
 
 interface AiModelSettingsFormProps {
   status?: AiModelStatus
@@ -30,14 +35,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   VOLCENGINE_ARK: '火山引擎（方舟 Agent Plan）',
   OPENAI_COMPATIBLE: 'OpenAI 兼容',
 }
-
-const VOLCENGINE_AGENT_PRESET_MODELS = [
-  'doubao-seed-2.1-pro',
-  'doubao-seed-evolving',
-  'deepseek-v4-pro',
-  'glm-5.3',
-  'kimi-k3',
-]
 
 function formatModelList(models?: string[]) {
   return models && models.length > 0 ? models.join(', ') : ''
@@ -164,7 +161,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
         {agentEnabled && (
           <div className="settings-subpanel-grid">
             <div className="settings-field"><span>Agent 提供商</span><SelectField value={agentProvider} onChange={handleAgentProviderChange} ariaLabel="Agent 提供商" disabled={isGuest || modelSave.isPending} options={MODEL_PROVIDER_OPTIONS} /><small>火山引擎方舟 Agent Plan 请使用专属 /api/plan/v3 端点与专属 API Key。</small></div>
-            <label><span>Agent 模型名称</span><input aria-label="Agent 模型名称" type="text" required maxLength={120} value={agentModel} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentModel(event.target.value)} placeholder="例如：doubao-seed-2.1-pro 或 deepseek-v4-pro" /><small>请填写套餐控制台中该 Plan 支持的模型 ID。</small></label>
+            <label><span>Agent 模型名称</span><input aria-label="Agent 模型名称" type="text" required maxLength={120} value={agentModel} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentModel(event.target.value)} placeholder="推荐默认：doubao-seed-2.1-pro（进阶 2.5x）" /><small>推荐主模型 doubao-seed-2.1-pro（2.5x），极速档可选 doubao-seed-2.0-mini（0.25x），标准档可选 doubao-seed-2.1-lite（0.5x）。</small></label>
             <label><span>Agent API Key</span><input aria-label="Agent API Key" type="password" maxLength={500} autoComplete="new-password" value={agentApiKey} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentApiKey(event.target.value)} placeholder={status?.agent?.apiKeyConfigured ? '已加密保存，留空表示不修改' : '请输入 Agent Plan 专属 API Key'} /><small>{status?.agent?.apiKeyConfigured ? '密钥已加密保存，留空不覆盖。' : '数据库仅保存 AES-GCM 密文，与默认通道密钥隔离。'}</small></label>
             <label><span>Agent API 地址</span><input aria-label="Agent API 地址" type="url" required maxLength={500} value={agentBaseUrl} disabled={isGuest || modelSave.isPending} onChange={(event) => setAgentBaseUrl(event.target.value)} placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" /><small>仅接受 HTTPS 地址；火山方舟 Agent Plan 勿填按量端点 /api/v3。</small></label>
             <label className="field-span-2">
@@ -177,10 +174,10 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
                     disabled={isGuest || modelSave.isPending}
                     onClick={() => {
                       setAgentAvailableModelsInput(VOLCENGINE_AGENT_PRESET_MODELS.join(', '))
-                      if (!agentModel.trim()) setAgentModel(VOLCENGINE_AGENT_PRESET_MODELS[0])
+                      if (!agentModel.trim()) setAgentModel(DEFAULT_AGENT_MODEL)
                     }}
                   >
-                    填入方舟 Agent Plan 常用模型
+                    填入全部 13 个方舟分级模型
                   </button>
                 ) : null}
               </span>
@@ -191,9 +188,9 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
                 value={agentAvailableModelsInput}
                 disabled={isGuest || modelSave.isPending}
                 onChange={(event) => setAgentAvailableModelsInput(event.target.value)}
-                placeholder="多个模型用英文逗号分隔，例如：doubao-seed-2.1-pro, deepseek-v4-pro, glm-5.3, kimi-k3"
+                placeholder="多个模型用英文逗号分隔，例如：doubao-seed-2.0-mini, doubao-seed-2.1-lite, doubao-seed-2.1-pro, deepseek-v4-pro"
               />
-              <small>留空时方舟通道默认提供 5 个常用 Agent Plan 模型；自定义后仅允许在所列模型与默认模型间切换。</small>
+              <small>默认包含方舟极速（0.25x）、标准（0.5x）、进阶（2x~8x）共 13 个在售语言模型，默认主模型为 doubao-seed-2.1-pro（2.5x）；对话界面将按分级分组展示。</small>
             </label>
             <div className="settings-subpanel-actions field-span-2">
               <span className={`model-test-result${agentTest.isError ? ' is-error' : ''}`} role="status">
@@ -231,6 +228,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
                   <th>输入 Token</th>
                   <th>输出 Token</th>
                   <th>总用量</th>
+                  <th>估算 AFP</th>
                 </tr>
               </thead>
               <tbody>
@@ -242,6 +240,7 @@ function AiModelSettingsForm({ status, isGuest }: AiModelSettingsFormProps) {
                     <td>{item.inputTokens.toLocaleString()}</td>
                     <td>{item.outputTokens.toLocaleString()}</td>
                     <td><strong>{item.totalTokens.toLocaleString()}</strong></td>
+                    <td>{item.estimatedAfp != null && item.provider === 'VOLCENGINE_ARK' ? `${formatAfpValue(item.estimatedAfp)} AFP` : '—'}</td>
                   </tr>
                 ))}
               </tbody>

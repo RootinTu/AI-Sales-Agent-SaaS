@@ -2,11 +2,13 @@ import {
   ArrowLeft,
   BookOpen,
   CaretDown,
+  ChartBar,
   ChatCircleDots,
   Check,
   CheckCircle,
   Clock,
   Cloud,
+  GearSix,
   HardDrive,
   Lock,
   PlusSquare,
@@ -31,17 +33,24 @@ import {
   savePreferredAgentStorageMode,
 } from '../components/assistant/agent-local-storage'
 import {
+  AGENT_PLAN_SMALL_DEFAULTS,
+  formatAfpCoeff,
+  formatAfpValue,
+  getAgentModelMeta,
+  groupAgentModelsByTier,
+} from '../components/assistant/agent-model-catalog'
+import {
+  formatCompactNumber,
   formatTime,
   useAssistantChatSession,
   type AssistantToolGuide,
   type ChatMessage,
 } from '../components/assistant/assistant-session'
 import {
-  AgentUsagePanel,
   AssistantConversationPane,
 } from '../components/assistant/AssistantWorkspaceParts'
 
-type AgentWorkspaceTab = 'chat' | 'runs' | 'tools'
+type AgentWorkspaceTab = 'chat' | 'runs' | 'tools' | 'usage'
 
 const agentToolGuides: AssistantToolGuide[] = [
   {
@@ -265,6 +274,10 @@ function AgentAuthorizedWorkspace({
                 <BookOpen size={16} />
                 <span>工具与知识范围</span>
               </button>
+              <button type="button" className={activeTab === 'usage' ? 'is-active' : ''} onClick={() => onChangeTab('usage')}>
+                <ChartBar size={16} />
+                <span>通道与用量</span>
+              </button>
             </nav>
           </div>
 
@@ -296,12 +309,12 @@ function AgentAuthorizedWorkspace({
             </div>
             <p className="agent-storage-hint">
               {storageMode === 'LOCAL'
-                ? '对话仅保存于当前设备本地，不写入云端会话表。'
-                : '对话云端独立保存，不与 MCP 共享且不自动过期。'}
+                ? '仅存本机，不写入云端会话表'
+                : '云端独立保存，不随 MCP 清除'}
             </p>
             {chat.conversations.length === 0 ? (
               <div className="mcp-empty-history">
-                <Robot size={40} />
+                <Robot size={36} />
                 <p>{storageMode === 'CLOUD' && chat.conversationsQuery.isLoading ? '正在读取云端会话…' : storageMode === 'LOCAL' ? '暂无本地会话' : '暂无云端会话'}</p>
               </div>
             ) : (
@@ -342,12 +355,6 @@ function AgentAuthorizedWorkspace({
           </div>
 
           <div className="agent-ws-sidebar-bottom">
-            <AgentUsagePanel
-              status={modelStatus}
-              loading={modelStatusQuery.isLoading}
-              activeModel={effectiveModel}
-              usesIndependentChannel={usesIndependentChannel}
-            />
             <button type="button" className="agent-return-button" onClick={onReturnBusiness}>
               <ArrowLeft size={15} />
               <span>切回全部业务</span>
@@ -367,11 +374,13 @@ function AgentAuthorizedWorkspace({
                   </div>
                 </div>
                 <div className="mcp-header-actions">
-                  <span className={`agent-header-model-badge${usesIndependentChannel ? ' is-independent' : ''}`}>
-                    <Sparkle size={13} />
-                    {effectiveModel}
-                    <em>{usesIndependentChannel ? '独立通道' : '默认通道'}</em>
-                  </span>
+                  <AgentHeaderUsagePill
+                    status={modelStatus}
+                    loading={modelStatusQuery.isLoading}
+                    activeModel={effectiveModel}
+                    usesIndependentChannel={usesIndependentChannel}
+                    onOpenDashboard={() => onChangeTab('usage')}
+                  />
                   <span className="mcp-status"><Sparkle size={14} />{chat.readableStatus}</span>
                 </div>
               </header>
@@ -401,11 +410,24 @@ function AgentAuthorizedWorkspace({
             </div>
           ) : activeTab === 'runs' ? (
             <AgentRunsPanel onBackToChat={() => onChangeTab('chat')} />
-          ) : (
+          ) : activeTab === 'tools' ? (
             <AgentToolsPanel
               onUsePrompt={(prompt) => {
                 onChangeTab('chat')
                 chat.applyToolTemplate(prompt)
+              }}
+              onBackToChat={() => onChangeTab('chat')}
+            />
+          ) : (
+            <AgentUsageDashboard
+              status={modelStatus}
+              loading={modelStatusQuery.isLoading}
+              activeModel={effectiveModel}
+              agentModels={agentModels}
+              usesIndependentChannel={usesIndependentChannel}
+              onSelectModel={(modelId) => {
+                handleSelectModel(modelId)
+                onChangeTab('chat')
               }}
               onBackToChat={() => onChangeTab('chat')}
             />
@@ -455,6 +477,8 @@ function AgentModelPicker({
   }, [open])
 
   const showDefaultFallback = !agentModels.includes(defaultMcpModel)
+  const groupedAgentModels = useMemo(() => groupAgentModelsByTier(agentModels), [agentModels])
+  const selectedMeta = getAgentModelMeta(selectedModel)
 
   return (
     <div ref={containerRef} className="agent-model-picker">
@@ -469,42 +493,54 @@ function AgentModelPicker({
       >
         <Sparkle size={14} />
         <b>{selectedModel}</b>
+        {usesIndependentChannel && selectedMeta.afpCoeff != null ? (
+          <em className="agent-model-coeff-pill">{formatAfpCoeff(selectedMeta.afpCoeff)}</em>
+        ) : null}
         <CaretDown size={12} />
       </button>
       {open ? (
         <div className="agent-model-menu" role="listbox" aria-label="可选 Agent 模型列表">
-          {agentModels.length > 0 ? (
-            <div className="agent-model-menu-group">
-              <p className="agent-model-menu-label">自主 Agent 独立通道（不占 MCP 额度）</p>
-              {agentModels.map((modelId) => {
-                const selected = modelId === selectedModel
-                const isDefaultAgent = modelId === status?.agent?.model
+          {groupedAgentModels.map((group) => (
+            <div key={group.tier} className="agent-model-menu-group">
+              <p className="agent-model-menu-label">
+                <span>{group.label}</span>
+                <small>{group.hint}</small>
+              </p>
+              {group.models.map((item) => {
+                const selected = item.id === selectedModel
+                const isDefaultAgent = item.id === status?.agent?.model
                 return (
                   <button
-                    key={modelId}
+                    key={item.id}
                     type="button"
                     role="option"
                     aria-selected={selected}
+                    title={item.summary}
                     className={`agent-model-option${selected ? ' is-selected' : ''}`}
                     onClick={() => {
-                      onSelect(modelId)
+                      onSelect(item.id)
                       setOpen(false)
                     }}
                   >
                     <span>
-                      <strong>{modelId}</strong>
-                      {isDefaultAgent ? <em>通道默认</em> : null}
+                      <strong>{item.id}</strong>
+                      {item.afpCoeff != null ? <em className="is-afp">{formatAfpCoeff(item.afpCoeff)}</em> : null}
+                      {isDefaultAgent ? <em>默认</em> : item.recommended ? <em>推荐</em> : null}
+                      {item.retiring ? <em className="is-warn">即将下线</em> : null}
                     </span>
                     {selected ? <Check size={14} /> : null}
                   </button>
                 )
               })}
             </div>
-          ) : null}
+          ))}
 
           {showDefaultFallback ? (
             <div className="agent-model-menu-group">
-              <p className="agent-model-menu-label">默认通道（消耗 MCP 普通额度）</p>
+              <p className="agent-model-menu-label">
+                <span>默认通道</span>
+                <small>消耗 MCP 额度</small>
+              </p>
               <button
                 type="button"
                 role="option"
@@ -531,6 +567,349 @@ function AgentModelPicker({
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+const AGENT_PROVIDER_DISPLAY: Record<string, string> = {
+  QWEN: '通义千问（百炼）',
+  VOLCENGINE_ARK: '火山引擎方舟 Agent Plan',
+  OPENAI_COMPATIBLE: 'OpenAI 兼容通道',
+}
+
+function AgentHeaderUsagePill({
+  status,
+  loading,
+  activeModel,
+  usesIndependentChannel,
+  onOpenDashboard,
+}: {
+  status?: AiModelStatus
+  loading: boolean
+  activeModel: string
+  usesIndependentChannel: boolean
+  onOpenDashboard: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const agentUsage = status?.usage?.agent
+  const providerCode = usesIndependentChannel ? (status?.agent?.provider ?? 'VOLCENGINE_ARK') : (status?.provider ?? 'QWEN')
+  const isArk = usesIndependentChannel && providerCode === 'VOLCENGINE_ARK'
+  const fiveHourAfp = agentUsage?.last5HoursAfp ?? 0
+  const fiveHourLimit = agentUsage?.fiveHourAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.fiveHourAfp
+  const weeklyAfp = agentUsage?.last7DaysAfp ?? 0
+  const weeklyLimit = agentUsage?.weeklyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.weeklyAfp
+  const monthlyAfp = agentUsage?.last30DaysAfp ?? 0
+  const monthlyLimit = agentUsage?.monthlyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.monthlyAfp
+  const activeMeta = getAgentModelMeta(activeModel)
+
+  useEffect(() => {
+    if (!open) return
+    function handlePointerDown(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="agent-header-usage-wrap">
+      <button
+        type="button"
+        className={`agent-header-model-badge${usesIndependentChannel ? ' is-independent' : ''}`}
+        aria-label="查看自主 Agent 通道与用量"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Sparkle size={13} />
+        <span>{activeModel}</span>
+        <em>
+          {loading
+            ? '读取中'
+            : isArk
+              ? `${formatAfpValue(fiveHourAfp)} / ${formatCompactNumber(fiveHourLimit)} AFP`
+              : usesIndependentChannel
+                ? '独立通道'
+                : '默认通道'}
+        </em>
+        <CaretDown size={12} />
+      </button>
+
+      {open ? (
+        <section className="agent-usage-popover" aria-label="自主 Agent 用量统计">
+          <header className="agent-usage-popover-head">
+            <div>
+              <strong>{AGENT_PROVIDER_DISPLAY[providerCode] ?? providerCode}</strong>
+              <small>
+                {activeModel}
+                {activeMeta.afpCoeff != null ? ` · ${activeMeta.tierLabel} (${formatAfpCoeff(activeMeta.afpCoeff)})` : ''}
+              </small>
+            </div>
+            <span className={`agent-channel-pill${usesIndependentChannel ? ' is-independent' : ''}`}>
+              {usesIndependentChannel ? '独立通道已就绪' : '沿用默认模型'}
+            </span>
+          </header>
+
+          {isArk ? (
+            <div className="agent-afp-windows" aria-label="Agent 燃料值 AFP 估算">
+              <AfpBarItem label="近 5 小时用量" used={fiveHourAfp} limit={fiveHourLimit} />
+              <AfpBarItem label="近一周用量" used={weeklyAfp} limit={weeklyLimit} />
+              <AfpBarItem label="近一月用量" used={monthlyAfp} limit={monthlyLimit} />
+            </div>
+          ) : null}
+
+          <div className="agent-popover-metrics">
+            <div>
+              <small>Agent 累计 Token</small>
+              <strong>{formatCompactNumber(agentUsage?.totalTokens ?? 0)}</strong>
+            </div>
+            <div>
+              <small>自主调用次数</small>
+              <strong>{formatCompactNumber(agentUsage?.successfulCalls ?? 0)}</strong>
+            </div>
+            <div>
+              <small>累计估算 AFP</small>
+              <strong>{formatAfpValue(agentUsage?.totalEstimatedAfp ?? 0)}</strong>
+            </div>
+          </div>
+
+          <div className="agent-popover-actions">
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => {
+                setOpen(false)
+                onOpenDashboard()
+              }}
+            >
+              <ChartBar size={14} />查看完整看板
+            </button>
+            <Link to="/app/settings#model" className="button button-primary" onClick={() => setOpen(false)}>
+              <GearSix size={14} />配置通道
+            </Link>
+          </div>
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+function AgentUsageDashboard({
+  status,
+  loading,
+  activeModel,
+  agentModels,
+  usesIndependentChannel,
+  onSelectModel,
+  onBackToChat,
+}: {
+  status?: AiModelStatus
+  loading: boolean
+  activeModel: string
+  agentModels: string[]
+  usesIndependentChannel: boolean
+  onSelectModel: (modelId: string) => void
+  onBackToChat: () => void
+}) {
+  const agentUsage = status?.usage?.agent
+  const providerCode = usesIndependentChannel ? (status?.agent?.provider ?? 'VOLCENGINE_ARK') : (status?.provider ?? 'QWEN')
+  const isArk = usesIndependentChannel && providerCode === 'VOLCENGINE_ARK'
+  const fiveHourAfp = agentUsage?.last5HoursAfp ?? 0
+  const fiveHourLimit = agentUsage?.fiveHourAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.fiveHourAfp
+  const weeklyAfp = agentUsage?.last7DaysAfp ?? 0
+  const weeklyLimit = agentUsage?.weeklyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.weeklyAfp
+  const monthlyAfp = agentUsage?.last30DaysAfp ?? 0
+  const monthlyLimit = agentUsage?.monthlyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.monthlyAfp
+  const groupedModels = useMemo(() => groupAgentModelsByTier(agentModels), [agentModels])
+  const activeMeta = getAgentModelMeta(activeModel)
+
+  return (
+    <div className="agent-subview-container">
+      <header className="agent-subview-header">
+        <div>
+          <h1>Agent 通道与燃料值（AFP）看板</h1>
+          <p>独立追踪自主 Agent 通道消耗，与 MCP 助手免费额度与向量模型配额完全隔离。</p>
+        </div>
+        <div className="agent-subview-actions">
+          <Link to="/app/settings#model" className="button button-secondary">
+            <GearSix size={15} />管理模型通道
+          </Link>
+          <button type="button" className="button button-primary" onClick={onBackToChat}>
+            回到自主对话
+          </button>
+        </div>
+      </header>
+
+      <div className="agent-usage-dashboard" aria-label="自主 Agent 用量看板">
+        <div className="agent-usage-hero-grid">
+          <section className="surface agent-usage-card">
+            <div className="agent-usage-card-head">
+              <div>
+                <small>当前运行通道</small>
+                <h2>{AGENT_PROVIDER_DISPLAY[providerCode] ?? providerCode}</h2>
+              </div>
+              <span className={`agent-channel-pill${usesIndependentChannel ? ' is-independent' : ''}`}>
+                {usesIndependentChannel ? '独立通道已就绪' : '沿用默认模型'}
+              </span>
+            </div>
+            <div className="agent-usage-current-pill">
+              <Sparkle size={16} />
+              <div>
+                <strong>{activeModel}</strong>
+                <span>
+                  {activeMeta.afpCoeff != null
+                    ? `${activeMeta.tierLabel} · 抵扣系数 ${formatAfpCoeff(activeMeta.afpCoeff)} AFP/万 token`
+                    : '默认主模型通道'}
+                </span>
+              </div>
+            </div>
+            <div className="agent-usage-stat-row">
+              <div>
+                <small>Agent 累计 Token</small>
+                <strong>{loading ? '—' : formatCompactNumber(agentUsage?.totalTokens ?? 0)}</strong>
+                <span>入 {formatCompactNumber(agentUsage?.inputTokens ?? 0)} / 出 {formatCompactNumber(agentUsage?.outputTokens ?? 0)}</span>
+              </div>
+              <div>
+                <small>自主调用次数</small>
+                <strong>{loading ? '—' : formatCompactNumber(agentUsage?.successfulCalls ?? 0)}</strong>
+                <span>{agentUsage?.lastCalledAt ? `最近 ${formatTime(agentUsage.lastCalledAt)}` : '暂无调用记录'}</span>
+              </div>
+              <div>
+                <small>累计估算 AFP</small>
+                <strong>{loading ? '—' : formatAfpValue(agentUsage?.totalEstimatedAfp ?? 0)}</strong>
+                <span>按官方公式自动折算</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="surface agent-usage-card" aria-label="Agent 燃料值 AFP 估算">
+            <div className="agent-usage-card-head">
+              <div>
+                <small>{isArk ? 'Agent Plan Small 参考限额' : 'AFP 燃料值估算'}</small>
+                <h2>Agent 燃料值（AFP）用量</h2>
+              </div>
+              <span className="agent-afp-formula-tag">AFP = (入×系数 + 出×系数) / 1万</span>
+            </div>
+            <div className="agent-afp-board-bars">
+              <AfpBarItem label="近 5 小时用量" used={fiveHourAfp} limit={fiveHourLimit} detailed />
+              <AfpBarItem label="近一周用量" used={weeklyAfp} limit={weeklyLimit} detailed />
+              <AfpBarItem label="近一月用量" used={monthlyAfp} limit={monthlyLimit} detailed />
+            </div>
+          </section>
+        </div>
+
+        <div className="agent-usage-lower-grid">
+          <section className="surface agent-usage-card">
+            <div className="agent-usage-card-head">
+              <div>
+                <small>本系统审计汇总</small>
+                <h2>按 Agent 模型消耗明细</h2>
+              </div>
+            </div>
+            {(agentUsage?.models?.length ?? 0) === 0 ? (
+              <div className="approval-empty">
+                <ChartBar size={22} />
+                <strong>暂无 Agent 模型调用记录</strong>
+                <span>发起一次自主 Agent 对话后，这里将自动按模型拆分展示 Token 与估算 AFP。</span>
+              </div>
+            ) : (
+              <div className="settings-usage-table-wrap">
+                <table className="settings-usage-table">
+                  <thead>
+                    <tr>
+                      <th>模型</th>
+                      <th>调用</th>
+                      <th>输入 / 输出</th>
+                      <th>总 Token</th>
+                      <th>估算 AFP</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(agentUsage?.models ?? []).map((item) => (
+                      <tr key={`${item.provider}:${item.model}`}>
+                        <td><code>{item.model}</code></td>
+                        <td>{item.successfulCalls.toLocaleString()}</td>
+                        <td>{formatCompactNumber(item.inputTokens)} / {formatCompactNumber(item.outputTokens)}</td>
+                        <td><strong>{item.totalTokens.toLocaleString()}</strong></td>
+                        <td>{item.estimatedAfp != null ? `${formatAfpValue(item.estimatedAfp)} AFP` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="surface agent-usage-card">
+            <div className="agent-usage-card-head">
+              <div>
+                <small>点击可一键切换当前对话模型</small>
+                <h2>可用模型分级与抵扣系数</h2>
+              </div>
+            </div>
+            {groupedModels.length === 0 ? (
+              <div className="approval-empty">
+                <Sparkle size={22} />
+                <strong>尚未启用独立 Agent 通道</strong>
+                <span>前往「设置 → AI 模型」开启火山引擎方舟 Agent Plan，即可解锁极速 / 标准 / 进阶三档模型一键切换。</span>
+              </div>
+            ) : (
+              <div className="agent-tier-directory">
+                {groupedModels.map((group) => (
+                  <div key={group.tier} className="agent-tier-group">
+                    <div className="agent-tier-group-head">
+                      <strong>{group.label}</strong>
+                      <span>{group.hint}</span>
+                    </div>
+                    <div className="agent-tier-chips">
+                      {group.models.map((item) => {
+                        const isSelected = item.id === activeModel
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={`agent-tier-chip${isSelected ? ' is-selected' : ''}`}
+                            title={item.summary}
+                            onClick={() => onSelectModel(item.id)}
+                          >
+                            <span>{item.id}</span>
+                            {item.afpCoeff != null ? <em>{formatAfpCoeff(item.afpCoeff)}</em> : null}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AfpBarItem({ label, used, limit, detailed = false }: { label: string; used: number; limit: number; detailed?: boolean }) {
+  const ratio = limit > 0 ? Math.min(100, (used / limit) * 100) : 0
+  return (
+    <div className={`agent-afp-row${detailed ? ' is-detailed' : ''}`}>
+      <div className="agent-afp-row-head">
+        <span>{label}</span>
+        <strong>
+          {formatAfpValue(used)} / {formatCompactNumber(limit)} AFP
+          {detailed ? <em>已用 {ratio.toFixed(1)}%</em> : null}
+        </strong>
+      </div>
+      <div className="agent-afp-bar" aria-hidden>
+        <span style={{ width: `${Math.min(100, ratio)}%` }} />
+      </div>
     </div>
   )
 }

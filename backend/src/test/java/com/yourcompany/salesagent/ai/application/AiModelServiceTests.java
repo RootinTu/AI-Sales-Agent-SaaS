@@ -308,4 +308,22 @@ class AiModelServiceTests {
 				.isInstanceOf(TokenQuotaExceededException.class)
 				.hasMessageContaining("向量模型");
 	}
+
+	@Test
+	void computesOfficialAfpDeductionFormulaAndExposesTieredVolcenginePresets() {
+		// 官方示例验证：doubao-seed-evolving，输入 50,000 + 输出 500，系数 2.5 -> 12.625 AFP
+		assertThat(AiModelService.estimateAfp("VOLCENGINE_ARK", "doubao-seed-evolving", 50_000L, 500L))
+				.isEqualTo(12.625);
+		// 极速档 doubao-seed-2.0-mini，系数 0.25 -> (40,000 * 0.25) / 10,000 = 1.0 AFP
+		assertThat(AiModelService.estimateAfp("VOLCENGINE_ARK", "doubao-seed-2.0-mini", 40_000L, 0L))
+				.isEqualTo(1.0);
+		// 旗舰档 kimi-k3.1-pro，系数 7.0 -> (10,000 * 7.0) / 10,000 = 7.0 AFP
+		assertThat(AiModelService.estimateAfp("VOLCENGINE_ARK", "kimi-k3.1-pro", 10_000L, 0L))
+				.isEqualTo(7.0);
+		// 默认列表不含即将下线的 kimi-k3，包含全部 13 个在售文本模型
+		assertThat(AiModelService.DEFAULT_VOLCENGINE_AGENT_MODELS)
+				.hasSize(13)
+				.doesNotContain("kimi-k3")
+				.contains("doubao-seed-2.0-mini", "doubao-seed-2.1-lite", "doubao-seed-2.1-pro", "kimi-k3.1-pro", "glm-5.4");
+	}
 }
