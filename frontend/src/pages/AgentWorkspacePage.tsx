@@ -18,11 +18,11 @@ import {
   Trash,
   WarningCircle,
 } from '@phosphor-icons/react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { getAgentRuns, getAgentRunSteps, type AgentRunPage } from '../api/agent-runs-api'
-import { getAiModelStatus, type AiModelStatus } from '../api/ai-settings-api'
+import { calibrateAgentAfp, getAiModelStatus, type AiModelStatus } from '../api/ai-settings-api'
 import * as mcpChatApi from '../api/mcp-chat-api'
 import { isDesktopClient, type AssistantCapabilities, type AssistantStorageMode } from '../api/mcp-chat-api'
 import { useAuth, useIsGuest } from '../auth/use-auth'
@@ -480,6 +480,51 @@ function AgentModelPicker({
   const groupedAgentModels = useMemo(() => groupAgentModelsByTier(agentModels), [agentModels])
   const selectedMeta = getAgentModelMeta(selectedModel)
 
+  type PickerCategoryKey = 'FAST' | 'STANDARD' | 'ADVANCED' | 'CUSTOM' | 'DEFAULT'
+  const categories = useMemo(() => {
+    const list: Array<{
+      key: PickerCategoryKey
+      label: string
+      hint: string
+      models: Array<{
+        id: string
+        afpCoeff: number | null
+        recommended?: boolean
+        retiring?: boolean
+        isDefaultChannel?: boolean
+        summary: string
+      }>
+    }> = groupedAgentModels.map((group) => ({
+      key: group.tier,
+      label: group.label,
+      hint: group.hint,
+      models: group.models,
+    }))
+    if (showDefaultFallback) {
+      list.push({
+        key: 'DEFAULT',
+        label: '默认通道',
+        hint: '消耗 MCP 额度',
+        models: [{
+          id: defaultMcpModel,
+          afpCoeff: null,
+          isDefaultChannel: true,
+          summary: '使用组织默认主模型并计入 MCP 普通额度',
+        }],
+      })
+    }
+    return list
+  }, [groupedAgentModels, showDefaultFallback, defaultMcpModel])
+
+  const defaultCategoryKey: PickerCategoryKey = categories.find((cat) => (
+    cat.models.some((item) => item.id === selectedModel)
+  ))?.key ?? categories[0]?.key ?? 'DEFAULT'
+
+  const [activeCategoryKey, setActiveCategoryKey] = useState<PickerCategoryKey | null>(null)
+  const effectiveCategory = categories.find((cat) => cat.key === activeCategoryKey)
+    ?? categories.find((cat) => cat.key === defaultCategoryKey)
+    ?? categories[0]
+
   return (
     <div ref={containerRef} className="agent-model-picker">
       <button
@@ -489,7 +534,12 @@ function AgentModelPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          setOpen((value) => {
+            if (!value) setActiveCategoryKey(defaultCategoryKey)
+            return !value
+          })
+        }}
       >
         <Sparkle size={14} />
         <b>{selectedModel}</b>
@@ -499,16 +549,43 @@ function AgentModelPicker({
         <CaretDown size={12} />
       </button>
       {open ? (
-        <div className="agent-model-menu" role="listbox" aria-label="可选 Agent 模型列表">
-          {groupedAgentModels.map((group) => (
-            <div key={group.tier} className="agent-model-menu-group">
-              <p className="agent-model-menu-label">
-                <span>{group.label}</span>
-                <small>{group.hint}</small>
-              </p>
-              {group.models.map((item) => {
+        <div className="agent-model-menu agent-model-menu-split" role="dialog" aria-label="可选 Agent 模型列表">
+          <div className="agent-model-menu-rail" role="tablist" aria-label="模型分类">
+            {categories.map((category) => {
+              const isActive = category.key === effectiveCategory?.key
+              return (
+                <button
+                  key={category.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`agent-model-rail-item${isActive ? ' is-active' : ''}`}
+                  onMouseEnter={() => setActiveCategoryKey(category.key)}
+                  onClick={() => setActiveCategoryKey(category.key)}
+                >
+                  <strong>{category.label}</strong>
+                  <small>{category.hint}</small>
+                </button>
+              )
+            })}
+            <div className="agent-model-rail-footer">
+              <Link to="/app/settings#model" onClick={() => setOpen(false)}>
+                {agentModels.length > 0 ? '管理可选模型 →' : '开启独立通道 →'}
+              </Link>
+            </div>
+          </div>
+
+          <div className="agent-model-menu-pane" role="listbox" aria-label={effectiveCategory?.label ?? '模型列表'}>
+            {effectiveCategory ? (
+              <div className="agent-model-pane-head">
+                <strong>{effectiveCategory.label}</strong>
+                <small>{effectiveCategory.hint}</small>
+              </div>
+            ) : null}
+            <div className="agent-model-pane-list">
+              {(effectiveCategory?.models ?? []).map((item) => {
                 const selected = item.id === selectedModel
-                const isDefaultAgent = item.id === status?.agent?.model
+                const isDefaultAgent = !item.isDefaultChannel && item.id === status?.agent?.model
                 return (
                   <button
                     key={item.id}
@@ -522,48 +599,17 @@ function AgentModelPicker({
                       setOpen(false)
                     }}
                   >
-                    <span>
-                      <strong>{item.id}</strong>
+                    <span className="agent-model-option-name">{item.id}</span>
+                    <span className="agent-model-option-tags">
                       {item.afpCoeff != null ? <em className="is-afp">{formatAfpCoeff(item.afpCoeff)}</em> : null}
-                      {isDefaultAgent ? <em>默认</em> : item.recommended ? <em>推荐</em> : null}
+                      {isDefaultAgent ? <em>默认</em> : item.recommended ? <em>推荐</em> : item.isDefaultChannel ? <em>默认模型</em> : null}
                       {item.retiring ? <em className="is-warn">即将下线</em> : null}
+                      {selected ? <Check size={14} className="agent-model-option-check" /> : null}
                     </span>
-                    {selected ? <Check size={14} /> : null}
                   </button>
                 )
               })}
             </div>
-          ))}
-
-          {showDefaultFallback ? (
-            <div className="agent-model-menu-group">
-              <p className="agent-model-menu-label">
-                <span>默认通道</span>
-                <small>消耗 MCP 额度</small>
-              </p>
-              <button
-                type="button"
-                role="option"
-                aria-selected={selectedModel === defaultMcpModel}
-                className={`agent-model-option${selectedModel === defaultMcpModel ? ' is-selected' : ''}`}
-                onClick={() => {
-                  onSelect(defaultMcpModel)
-                  setOpen(false)
-                }}
-              >
-                <span>
-                  <strong>{defaultMcpModel}</strong>
-                  <em>默认模型</em>
-                </span>
-                {selectedModel === defaultMcpModel ? <Check size={14} /> : null}
-              </button>
-            </div>
-          ) : null}
-
-          <div className="agent-model-menu-footer">
-            <Link to="/app/settings#model" onClick={() => setOpen(false)}>
-              {agentModels.length > 0 ? '在设置中管理可选模型 →' : '开启自主 Agent 独立通道 →'}
-            </Link>
           </div>
         </div>
       ) : null}
@@ -718,6 +764,7 @@ function AgentUsageDashboard({
   onSelectModel: (modelId: string) => void
   onBackToChat: () => void
 }) {
+  const queryClient = useQueryClient()
   const agentUsage = status?.usage?.agent
   const providerCode = usesIndependentChannel ? (status?.agent?.provider ?? 'VOLCENGINE_ARK') : (status?.provider ?? 'QWEN')
   const isArk = usesIndependentChannel && providerCode === 'VOLCENGINE_ARK'
@@ -729,6 +776,40 @@ function AgentUsageDashboard({
   const monthlyLimit = agentUsage?.monthlyAfpLimit ?? AGENT_PLAN_SMALL_DEFAULTS.monthlyAfp
   const groupedModels = useMemo(() => groupAgentModelsByTier(agentModels), [agentModels])
   const activeMeta = getAgentModelMeta(activeModel)
+
+  const [calibrating, setCalibrating] = useState(false)
+  const [cal5h, setCal5h] = useState('')
+  const [cal7d, setCal7d] = useState('')
+  const [cal30d, setCal30d] = useState('')
+  const calibrationMutation = useMutation({
+    mutationFn: calibrateAgentAfp,
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['ai-model-status'], updated)
+      setCalibrating(false)
+    },
+  })
+
+  function openCalibration() {
+    setCal5h(fiveHourAfp > 0 ? String(fiveHourAfp) : '')
+    setCal7d(weeklyAfp > 0 ? String(weeklyAfp) : '')
+    setCal30d(monthlyAfp > 0 ? String(monthlyAfp) : '')
+    calibrationMutation.reset()
+    setCalibrating(true)
+  }
+
+  function submitCalibration() {
+    const parse = (raw: string) => {
+      const trimmed = raw.trim()
+      if (!trimmed) return null
+      const num = Number(trimmed)
+      return Number.isFinite(num) && num >= 0 ? num : null
+    }
+    calibrationMutation.mutate({
+      fiveHourUsedAfp: parse(cal5h),
+      weeklyUsedAfp: parse(cal7d),
+      monthlyUsedAfp: parse(cal30d),
+    })
+  }
 
   return (
     <div className="agent-subview-container">
@@ -795,13 +876,78 @@ function AgentUsageDashboard({
                 <small>{isArk ? 'Agent Plan Small 参考限额' : 'AFP 燃料值估算'}</small>
                 <h2>Agent 燃料值（AFP）用量</h2>
               </div>
-              <span className="agent-afp-formula-tag">AFP = (入×系数 + 出×系数) / 1万</span>
+              <button
+                type="button"
+                className="compact-button"
+                onClick={() => (calibrating ? setCalibrating(false) : openCalibration())}
+              >
+                {calibrating ? '取消校准' : '校准控制台 AFP'}
+              </button>
             </div>
+            {calibrating ? (
+              <div className="agent-afp-calibration-box" aria-label="AFP 校准表单">
+                <p>填入方舟控制台当前已用 AFP（如 95），用于同步历史/站外消耗；后续本系统新调用将自动累加，不会重复计算。</p>
+                <div className="agent-afp-calibration-fields">
+                  <label>
+                    <span>近 5 小时已用</span>
+                    <input
+                      aria-label="近 5 小时已用 AFP"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="例如 95"
+                      value={cal5h}
+                      onChange={(event) => setCal5h(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>近一周已用（可选）</span>
+                    <input
+                      aria-label="近一周已用 AFP"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="留空同 5 小时"
+                      value={cal7d}
+                      onChange={(event) => setCal7d(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>近一月已用（可选）</span>
+                    <input
+                      aria-label="近一月已用 AFP"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="留空同近一周"
+                      value={cal30d}
+                      onChange={(event) => setCal30d(event.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="agent-afp-calibration-actions">
+                  {calibrationMutation.isError ? <span className="admin-form-error">{calibrationMutation.error.message}</span> : null}
+                  <button
+                    type="button"
+                    className="button button-primary"
+                    disabled={calibrationMutation.isPending}
+                    onClick={submitCalibration}
+                  >
+                    {calibrationMutation.isPending ? '保存中…' : '保存校准'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="agent-afp-board-bars">
               <AfpBarItem label="近 5 小时用量" used={fiveHourAfp} limit={fiveHourLimit} detailed />
               <AfpBarItem label="近一周用量" used={weeklyAfp} limit={weeklyLimit} detailed />
               <AfpBarItem label="近一月用量" used={monthlyAfp} limit={monthlyLimit} detailed />
             </div>
+            <p className="agent-usage-io-note">
+              {agentUsage?.calibratedAt
+                ? `已按控制台基线校准（${formatTime(agentUsage.calibratedAt)}），后续调用自动累加。`
+                : '按官方公式 (入×系数 + 出×系数)/1万 统计本系统调用；如含历史或站外消耗，可点右上角「校准控制台 AFP」同步。'}
+            </p>
           </section>
         </div>
 

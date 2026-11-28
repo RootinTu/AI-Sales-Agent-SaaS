@@ -1,5 +1,6 @@
 package com.yourcompany.salesagent.ai.domain;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -46,6 +47,18 @@ public class AiModelConfiguration {
 
 	@TableField(value = "agent_available_models", updateStrategy = FieldStrategy.ALWAYS)
 	private String agentAvailableModels;
+
+	@TableField(value = "agent_afp_baseline_5h", updateStrategy = FieldStrategy.ALWAYS)
+	private BigDecimal agentAfpBaseline5h;
+
+	@TableField(value = "agent_afp_baseline_7d", updateStrategy = FieldStrategy.ALWAYS)
+	private BigDecimal agentAfpBaseline7d;
+
+	@TableField(value = "agent_afp_baseline_30d", updateStrategy = FieldStrategy.ALWAYS)
+	private BigDecimal agentAfpBaseline30d;
+
+	@TableField(value = "agent_afp_calibrated_at", updateStrategy = FieldStrategy.ALWAYS)
+	private Instant agentAfpCalibratedAt;
 
 	@TableField("encryption_version")
 	private int encryptionVersion;
@@ -155,6 +168,23 @@ public class AiModelConfiguration {
 		this.agentBaseUrl = null;
 		this.encryptedAgentApiKey = null;
 		this.agentAvailableModels = null;
+		this.agentAfpBaseline5h = null;
+		this.agentAfpBaseline7d = null;
+		this.agentAfpBaseline30d = null;
+		this.agentAfpCalibratedAt = null;
+		this.updatedAt = now;
+	}
+
+	public void updateAgentAfpCalibration(
+			BigDecimal baseline5h,
+			BigDecimal baseline7d,
+			BigDecimal baseline30d,
+			Instant calibratedAt,
+			Instant now) {
+		this.agentAfpBaseline5h = baseline5h;
+		this.agentAfpBaseline7d = baseline7d;
+		this.agentAfpBaseline30d = baseline30d;
+		this.agentAfpCalibratedAt = calibratedAt;
 		this.updatedAt = now;
 	}
 
@@ -175,6 +205,10 @@ public class AiModelConfiguration {
 	public String getAgentBaseUrl() { return agentBaseUrl; }
 	public String getEncryptedAgentApiKey() { return encryptedAgentApiKey; }
 	public String getAgentAvailableModels() { return agentAvailableModels; }
+	public BigDecimal getAgentAfpBaseline5h() { return agentAfpBaseline5h; }
+	public BigDecimal getAgentAfpBaseline7d() { return agentAfpBaseline7d; }
+	public BigDecimal getAgentAfpBaseline30d() { return agentAfpBaseline30d; }
+	public Instant getAgentAfpCalibratedAt() { return agentAfpCalibratedAt; }
 	public int getEncryptionVersion() { return encryptionVersion; }
 	public Instant getCreatedAt() { return createdAt; }
 	public Instant getUpdatedAt() { return updatedAt; }

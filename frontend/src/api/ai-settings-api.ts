@@ -42,6 +42,7 @@ export interface AiAgentUsageSummary {
   fiveHourAfpLimit?: number
   weeklyAfpLimit?: number
   monthlyAfpLimit?: number
+  calibratedAt?: string | null
 }
 
 export interface AiModelStatus {
@@ -114,6 +115,19 @@ export function testAiModelConnection() {
   return requestJson<AiModelTestResult>('/api/v1/ai/model/test', { method: 'POST' })
 }
 
+export interface AiAgentAfpCalibrationInput {
+  fiveHourUsedAfp?: number | null
+  weeklyUsedAfp?: number | null
+  monthlyUsedAfp?: number | null
+}
+
 export function testAgentModelConnection() {
   return requestJson<AiModelTestResult>('/api/v1/ai/model/agent/test', { method: 'POST' })
+}
+
+export function calibrateAgentAfp(input: AiAgentAfpCalibrationInput) {
+  return requestJson<AiModelStatus>('/api/v1/ai/model/agent/afp-calibration', {
+    method: 'PUT',
+    data: input,
+  })
 }

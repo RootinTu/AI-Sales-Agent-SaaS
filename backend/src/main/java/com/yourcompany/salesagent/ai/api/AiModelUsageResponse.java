@@ -128,7 +128,8 @@ public record AiModelUsageResponse(
 			double last30DaysAfp,
 			double fiveHourAfpLimit,
 			double weeklyAfpLimit,
-			double monthlyAfpLimit) {
+			double monthlyAfpLimit,
+			Instant calibratedAt) {
 
 		public AgentUsageSummary(
 				long inputTokens,
@@ -139,7 +140,7 @@ public record AiModelUsageResponse(
 				Instant lastCalledAt,
 				List<ModelUsageItem> models) {
 			this(inputTokens, outputTokens, cachedInputTokens, totalTokens, successfulCalls, lastCalledAt, models,
-					0.0, 0.0, 0.0, 0.0, 2000.0, 7000.0, 20000.0);
+					0.0, 0.0, 0.0, 0.0, 2000.0, 7000.0, 20000.0, null);
 		}
 
 		public static AgentUsageSummary empty() {

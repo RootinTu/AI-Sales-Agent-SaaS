@@ -61,7 +61,11 @@ public interface ModelCallMapper {
 			FROM model_call
 			WHERE organization_id = #{organizationId}
 			  AND status = 'SUCCEEDED'
-			  AND (purpose = 'AGENT_PLAN' OR COALESCE(input_snapshot->>'mode', '') = 'AGENT')
+			  AND (
+			      purpose = 'AGENT_PLAN'
+			      OR COALESCE(input_snapshot->>'mode', '') = 'AGENT'
+			      OR provider = 'VOLCENGINE_ARK'
+			  )
 			""")
 	ModelUsageSummaryRow selectAgentUsageSummary(@Param("organizationId") UUID organizationId);
 
@@ -76,7 +80,11 @@ public interface ModelCallMapper {
 			FROM model_call
 			WHERE organization_id = #{organizationId}
 			  AND status = 'SUCCEEDED'
-			  AND (purpose = 'AGENT_PLAN' OR COALESCE(input_snapshot->>'mode', '') = 'AGENT')
+			  AND (
+			      purpose = 'AGENT_PLAN'
+			      OR COALESCE(input_snapshot->>'mode', '') = 'AGENT'
+			      OR provider = 'VOLCENGINE_ARK'
+			  )
 			GROUP BY provider, model
 			ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC, model ASC
 			""")
@@ -93,7 +101,11 @@ public interface ModelCallMapper {
 			FROM model_call
 			WHERE organization_id = #{organizationId}
 			  AND status = 'SUCCEEDED'
-			  AND (purpose = 'AGENT_PLAN' OR COALESCE(input_snapshot->>'mode', '') = 'AGENT')
+			  AND (
+			      purpose = 'AGENT_PLAN'
+			      OR COALESCE(input_snapshot->>'mode', '') = 'AGENT'
+			      OR provider = 'VOLCENGINE_ARK'
+			  )
 			  AND COALESCE(completed_at, started_at) >= #{since}
 			GROUP BY provider, model
 			""")
